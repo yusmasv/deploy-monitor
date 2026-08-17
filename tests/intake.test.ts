@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractZip, ZipRejected } from "../lib/intake";
+import { extractZip, sanitizeUploadName, ZipRejected } from "../lib/intake";
 import { makeZip } from "./helpers/zip";
 
 const LIMITS = { maxTotalBytes: 1024 * 1024, maxEntries: 100 };
@@ -228,5 +228,29 @@ describe("extractZip — normalisasi", () => {
   it("menolak zip yang tidak menyisakan file apa pun", async () => {
     const zip = makeZip([{ name: ".git/config", data: Buffer.from("x") }]);
     await expect(extractZip(zip, dest, LIMITS)).rejects.toThrow(/tidak berisi file/i);
+  });
+});
+
+describe("sanitizeUploadName", () => {
+  it("membiarkan nama file biasa apa adanya", () => {
+    expect(sanitizeUploadName("myapp-v2.zip")).toBe("myapp-v2.zip");
+  });
+
+  it("membuang karakter kontrol termasuk ESC dan newline (pemalsuan log)", () => {
+    expect(sanitizeUploadName("x\n[ERROR] deploy sukses\n.zip")).toBe("x[ERROR] deploy sukses.zip");
+    expect(sanitizeUploadName("evil\x1b[31mred\x1b[0m.zip")).toBe("evil[31mred[0m.zip");
+    expect(sanitizeUploadName("a\rb\tc\x7f.zip")).toBe("abc.zip");
+  });
+
+  it("membatasi panjang nama ke 255 karakter", () => {
+    const long = "a".repeat(500) + ".zip";
+    const out = sanitizeUploadName(long);
+    expect(out.length).toBe(255);
+    expect(out).toBe("a".repeat(255));
+  });
+
+  it("memakai fallback kalau hasil sanitasi kosong", () => {
+    expect(sanitizeUploadName("\x1b\x1b\x1b")).toBe("upload.zip");
+    expect(sanitizeUploadName("")).toBe("upload.zip");
   });
 });

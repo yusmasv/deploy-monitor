@@ -24,6 +24,22 @@ function escapeForMessage(name: string): string {
   return JSON.stringify(name);
 }
 
+/**
+ * Nama file zip yang diunggah operator (multipart `file.name`) mengalir apa
+ * adanya ke log deploy (lihat Runner.execute — "Menerima ... file dari
+ * ${job.zipName}."), yang disimpan lewat db.appendLine dan dirender ulang
+ * oleh LogViewer yang mem-parse ANSI. Sama seperti nama entry zip
+ * (escapeForMessage di atas), karakter kontrol pada nama ini — terutama ESC
+ * dan newline — bisa memalsukan baris log. Beda dari nama entry zip, nama
+ * ini tidak butuh escape untuk ditampilkan (bukan bagian dari pesan error
+ * yang diformat), jadi lebih tepat MEMBUANG karakter kontrolnya langsung
+ * sebelum disimpan, bukan meng-escape-nya saat dipakai.
+ */
+export function sanitizeUploadName(name: string): string {
+  const cleaned = name.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 255);
+  return cleaned || "upload.zip";
+}
+
 function openZip(buf: Buffer): Promise<yauzl.ZipFile> {
   return new Promise((res, rej) =>
     // decodeStrings:false DISENGAJA. Dengan default (true), yauzl menjalankan
