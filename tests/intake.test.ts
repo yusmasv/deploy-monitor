@@ -155,6 +155,27 @@ describe("extractZip — keamanan tulis-ke-disk", () => {
     expect(await readFile(join(dest, "sub"), "utf8")).toBe("file lama, bukan hasil extract");
   });
 
+  // Jendela yang lebih spesifik: direktori BARU yang dibuat mkdir() untuk
+  // lokasi akhir suatu entry harus tercatat untuk rollback SAAT mkdir itu
+  // sendiri berhasil — bukan menunggu rename entry itu sukses (lihat
+  // penjelasan panjang di lib/intake.ts soal ini). Dua entry dengan nama
+  // PERSIS SAMA memaksa rename yang nyata gagal (bukan mock): entry pertama
+  // membuat "fresh/dir/" dari nol lalu berhasil dipindah (menghabiskan file
+  // staging-nya); entry kedua (duplikat) mendapati direktori itu sudah ada
+  // (mkdir tidak membuat apa-apa lagi) tapi source staging-nya sudah
+  // dipindah entry pertama, jadi rename-nya gagal ENOENT sungguhan.
+  it("rollback membuang direktori baru yang dibuat mkdir walau bukan entry yang gagal sendiri", async () => {
+    const zip = makeZip([
+      { name: "fresh/dir/a.txt", data: Buffer.from("pertama") },
+      { name: "fresh/dir/a.txt", data: Buffer.from("kedua") }, // nama sama persis: duplikat
+    ]);
+    await expect(extractZip(zip, dest, LIMITS)).rejects.toThrow();
+    // Direktori "fresh/" yang baru dibuat mkdir() untuk entry pertama HARUS
+    // ikut dibuang meski entry yang gagal (entry kedua) bukan pemilik mkdir
+    // itu -- dest harus balik kosong sepenuhnya.
+    expect(await readdir(dest)).toEqual([]);
+  });
+
   // Anti log-injection: nama entry dengan newline tidak boleh nongol mentah
   // di pesan error (yang juga mengalir ke log viewer aplikasi).
   it("meng-escape newline pada nama entry di pesan error (anti pemalsuan log)", async () => {

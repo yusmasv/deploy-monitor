@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rename, rm, rmdir } from "node:fs/promises";
+import { mkdir, writeFile, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import yauzl from "yauzl";
@@ -279,6 +279,18 @@ export async function extractZip(
   const stagingDir = join(destDir, `.zip-extract-${randomUUID()}`);
   await mkdir(stagingDir, { recursive: true });
   const movedFinalPaths: string[] = [];
+  // Direktori yang BARU DIBUAT untuk lokasi akhir suatu entry — dicatat
+  // SAAT mkdir berhasil membuatnya, BUKAN setelah rename entry itu sukses.
+  // fs.mkdir(dir, {recursive:true}) mengembalikan direktori PERTAMA yang
+  // benar-benar ia buat (atau undefined kalau tidak ada yang baru dibuat —
+  // diverifikasi langsung). Kalau dicatat baru SETELAH rename sukses (versi
+  // sebelumnya), ada jendela: mkdir membuat direktori baru, lalu rename
+  // gagal — direktori itu tidak pernah tercatat di mana pun dan rollback
+  // tidak pernah membuang direktori kosong bekasnya. Mencatat di titik mkdir
+  // sendiri menutup jendela itu, dan sekalian membuat pembersihan cukup satu
+  // rm({recursive:true}) per chain — tidak perlu lagi menyusuri leluhur
+  // direktori satu-satu pakai rmdir seperti versi sebelumnya.
+  const createdDirs: string[] = [];
   try {
     for (const p of planned) {
       const stagingPath = join(stagingDir, p.relPath);
@@ -287,27 +299,27 @@ export async function extractZip(
     }
     for (const p of planned) {
       const stagingPath = join(stagingDir, p.relPath);
-      await mkdir(dirname(p.finalPath), { recursive: true });
+      const createdRoot = await mkdir(dirname(p.finalPath), { recursive: true });
+      if (createdRoot) createdDirs.push(createdRoot);
       await rename(stagingPath, p.finalPath);
       movedFinalPaths.push(p.finalPath);
     }
   } catch (err) {
-    // Rollback: buang entry yang sudah sempat dipindah ke destDir, dan
-    // rapikan direktori kosong yang baru saja dibuat untuknya. Ini BUKAN
+    // Rollback: buang direktori yang BARU DIBUAT untuk commit ini (sekali
+    // rm recursive per chain — otomatis membuang file apa pun yang sempat
+    // dipindah ke dalamnya juga), lalu buang file yang sempat pindah ke
+    // direktori yang SUDAH ADA sebelumnya (mis. langsung di root destDir,
+    // yang mkdir tidak pernah "buat" sehingga tidak masuk createdDirs).
+    // rm({force:true}) aman dipanggil dua kali untuk path yang sama — kalau
+    // sudah hilang lewat pembersihan createdDirs, ini jadi no-op. Ini BUKAN
     // masalah zip (validasi di Fase 1-3 sudah lolos) — jadi error asli
     // (mis. ENOSPC dari Node) dilempar ulang apa adanya, tidak dibungkus
     // jadi ZipRejected.
+    for (const dir of createdDirs) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
     for (const finalPath of movedFinalPaths) {
       await rm(finalPath, { force: true }).catch(() => {});
-      // rmdir (bukan rm) sengaja dipakai: rmdir HANYA berhasil kalau
-      // direktorinya benar-benar kosong (ENOTEMPTY kalau tidak) — rm() tanpa
-      // {recursive:true} justru selalu gagal EISDIR untuk direktori apa pun,
-      // kosong ataupun tidak, jadi tidak cocok dipakai di sini.
-      let dir = dirname(finalPath);
-      while (dir !== root) {
-        try { await rmdir(dir); } catch { break; }   // berhenti begitu direktori tidak kosong/sudah hilang
-        dir = dirname(dir);
-      }
     }
     throw err;
   } finally {
