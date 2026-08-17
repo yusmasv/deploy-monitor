@@ -1,0 +1,33 @@
+{
+  "name": "my-app",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+
+    "//generate": "Author-time only. Run locally after changing lib/schema.ts, then COMMIT drizzle/.",
+    "generate": "drizzle-kit generate",
+
+    "//migrate": "Deploy-time. MIGRATE_CMD in deploy.env points here. Applies pending files in drizzle/ and records them in __drizzle_migrations.",
+    "migrate": "drizzle-kit migrate",
+
+    "//db:push": "DEV ONLY. Never in a deploy: it writes the schema without recording migrations, which makes `migrate` fail afterwards.",
+    "db:push": "drizzle-kit push",
+
+    "seed": "tsx scripts/seed.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "drizzle-orm": "^0.45.2",
+    "next": "16.2.6",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.22.3",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,34 @@
+# Generic, stack-agnostic runtime stack. Lives on the runtime host at
+# /srv/platform/app-stack.yml and is reused by EVERY project — nothing in here
+# is app-specific. run.sh exports the variables below before invoking it.
+#
+# Only one service: the migration step runs as `compose run app <cmd>`, so it
+# reuses this exact image, env_file, volume and user by construction.
+
+services:
+  app:
+    image: ${IMAGE}
+    restart: unless-stopped
+
+    # Must match the UID/GID the image's user was created with, and the
+    # ownership run.sh applies to DATA_DIR. Mismatch = "Permission denied"
+    # the moment the app touches its data directory.
+    user: "${APP_UID}:${APP_GID}"
+
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+
+    environment:
+      # Apps that read a port from the environment (Next.js, Rails, many
+      # others) bind correctly without any per-project override.
+      PORT: "${APP_PORT}"
+
+    # Secrets and connection strings. Created empty by run.sh on first deploy,
+    # then edited by hand on the runtime host; deploys never overwrite it.
+    env_file:
+      - ${APP_ENV_FILE}
+
+    # Persistent state (SQLite file, uploads, ...). Host path, so backups and
+    # inspection do not require entering the container.
+    volumes:
+      - ${DATA_DIR}:/app/data

@@ -1,0 +1,29 @@
+# Django — same contract as the Next.js template: ONE image that can both serve
+# the app and run `python manage.py migrate`. Proof that the deployment system
+# itself is stack-agnostic: only deploy.env changes.
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+# Numeric USER (below) is read straight off the built image by deploy.sh and
+# used to chown the data volume. A NAME here (USER app) cannot be mapped to a
+# host UID and is rejected.
+RUN groupadd -g 1001 app \
+ && useradd -u 1001 -g app -M -s /usr/sbin/nologin app
+
+COPY . .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN mkdir -p /app/data && chown -R 1001:1001 /app
+
+USER 1001:1001
+
+EXPOSE 8000
+
+# PORT is injected by app-stack.yml. Replace `myproject` with your WSGI module.
+CMD ["sh", "-c", "gunicorn myproject.wsgi:application --bind 0.0.0.0:${PORT:-8000}"]

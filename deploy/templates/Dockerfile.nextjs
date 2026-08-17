@@ -1,0 +1,41 @@
+# Next.js + Drizzle — ONE image that can both serve the app and run migrations.
+#
+# The whole point: `drizzle-kit` is a devDependency and migrations are files on
+# disk. A "lean" production image (pruned node_modules, or Next's standalone
+# output on its own) has neither, so `pnpm migrate` inside it fails with
+# `drizzle-kit: not found`. This image keeps node_modules + drizzle/ +
+# package.json, exactly as the deployment system expects.
+
+FROM node:22-alpine
+
+RUN corepack enable && corepack prepare pnpm@10.15.1 --activate
+
+WORKDIR /app
+
+# Numeric USER (below) is read straight off the built image by deploy.sh and
+# used to chown the data volume. A NAME here (USER app) cannot be mapped to a
+# host UID and is rejected.
+RUN addgroup -g 1001 -S app \
+ && adduser -u 1001 -S app -G app
+
+# Copied in one shot so optional files (pnpm-workspace.yaml, .npmrc, ...) never
+# break the build. Costs some layer caching; buys a build that always works.
+COPY . .
+
+# NOT --prod: drizzle-kit and tsx are devDependencies and are needed at
+# migration time, which happens in this same image.
+RUN pnpm install --frozen-lockfile
+
+RUN pnpm build
+
+# The bind-mounted data volume is mounted here at runtime.
+RUN mkdir -p /app/data && chown -R 1001:1001 /app
+
+USER 1001:1001
+
+# Next.js binds to localhost by default, which is unreachable from outside the
+# container. PORT is injected by app-stack.yml.
+ENV HOSTNAME=0.0.0.0
+EXPOSE 3000
+
+CMD ["pnpm", "start"]
