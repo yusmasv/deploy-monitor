@@ -42,6 +42,31 @@ describe("extractZip — keamanan", () => {
       .rejects.toThrow(/terlalu besar/i);
   });
 
+  it("menolak entry berdasar ukuran yang diumumkan header — sebelum dibongkar", async () => {
+    // Header zip jujur (declaredSize == data.length asli), tapi angkanya
+    // sendiri sudah melebihi sisa anggaran. Ini harus ketahuan dari
+    // uncompressedSize di central directory saja, TANPA membongkar entry.
+    const zip = makeZip([{ name: "besar.bin", data: Buffer.alloc(5000, 0) }]);
+    await expect(extractZip(zip, dest, { maxTotalBytes: 1000, maxEntries: 100 }))
+      .rejects.toThrow(/sebelum entry dibongkar/i);
+  });
+
+  it("tetap menolak zip walau entry berbohong soal ukurannya di header (under-declared)", async () => {
+    // Header MENGAKU cuma 10 byte tapi datanya sungguhan 50.000 byte —
+    // memalsukan uncompressedSize seperti trik zip-bomb klasik. Lapis
+    // pre-check kita percaya header (10 <= sisa anggaran), jadi lolos di
+    // situ; yang menggagalkannya adalah pengecekan konsistensi byte saat
+    // streaming (baik milik aplikasi ini maupun milik yauzl sendiri — lihat
+    // catatan di lib/intake.ts). Yang penting bagi test ini: hasil akhirnya
+    // zip tetap DITOLAK, bukan lolos ditulis ke disk dengan ukuran nyata
+    // yang tidak pernah diperiksa.
+    const real = Buffer.alloc(50_000, 7);
+    const zip = makeZip([{ name: "liar.bin", data: real, declaredSize: 10 }]);
+    await expect(extractZip(zip, dest, { maxTotalBytes: 1000, maxEntries: 100 }))
+      .rejects.toThrow();
+    expect(await readdir(dest)).toEqual([]);
+  });
+
   it("menolak zip dengan entry terlalu banyak", async () => {
     const zip = makeZip(Array.from({ length: 10 }, (_, i) => ({ name: `f${i}.txt` })));
     await expect(extractZip(zip, dest, { maxTotalBytes: 1e6, maxEntries: 5 }))

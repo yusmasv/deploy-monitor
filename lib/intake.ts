@@ -26,16 +26,55 @@ function openZip(buf: Buffer): Promise<yauzl.ZipFile> {
   );
 }
 
-function readEntry(zf: yauzl.ZipFile, e: yauzl.Entry): Promise<Buffer> {
-  return new Promise((res, rej) =>
+/**
+ * Membaca satu entry sampai selesai, sambil menjaga anggaran byte APLIKASI
+ * (bukan sekadar percaya ukuran yang diumumkan zip). `remainingBudget` adalah
+ * sisa `maxTotalBytes` sebelum entry ini dibaca. Kalau bytes yang benar-benar
+ * mengalir keluar dari decompressor melebihi sisa anggaran, stream dihentikan
+ * SAAT ITU JUGA — tidak menunggu entry selesai — supaya entry yang header-nya
+ * bohong (declare kecil, decompress raksasa) tidak sempat menghabiskan memori
+ * sebelum ketahuan. Ini lapis kedua yang independen dari pengecekan
+ * `uncompressedSize` di pemanggil: milik APLIKASI ini sendiri, bukan sekadar
+ * mempercayai penegakan internal yauzl (lihat catatan di extractZip).
+ */
+function readEntry(
+  zf: yauzl.ZipFile, e: yauzl.Entry, name: string, remainingBudget: number, maxTotalBytes: number,
+): Promise<Buffer> {
+  return new Promise((res, rej) => {
+    let settled = false;
     zf.openReadStream(e, (err, rs) => {
-      if (err || !rs) return rej(new ZipRejected(`Gagal membaca entry '${e.fileName}'.`));
+      if (err || !rs) {
+        settled = true;
+        return rej(new ZipRejected(`Gagal membaca entry '${e.fileName}'.`));
+      }
       const chunks: Buffer[] = [];
-      rs.on("data", (c: Buffer) => chunks.push(c));
-      rs.on("end", () => res(Buffer.concat(chunks)));
-      rs.on("error", () => rej(new ZipRejected(`Entry '${e.fileName}' rusak.`)));
-    }),
-  );
+      let size = 0;
+      rs.on("data", (c: Buffer) => {
+        if (settled) return;
+        size += c.length;
+        if (size > remainingBudget) {
+          settled = true;
+          rs.destroy();
+          rej(new ZipRejected(
+            `Isi zip terlalu besar setelah di-extract (melebihi batas ${maxTotalBytes} byte ` +
+            `saat streaming entry '${name}').`,
+          ));
+          return;
+        }
+        chunks.push(c);
+      });
+      rs.on("end", () => {
+        if (settled) return;
+        settled = true;
+        res(Buffer.concat(chunks));
+      });
+      rs.on("error", () => {
+        if (settled) return;
+        settled = true;
+        rej(new ZipRejected(`Entry '${e.fileName}' rusak.`));
+      });
+    });
+  });
 }
 
 /** Satu-satunya penjaga terhadap zip-slip. Mengembalikan path absolut yang aman. */
@@ -78,7 +117,36 @@ export async function extractZip(
           if (collected.length + 1 > limits.maxEntries) {
             throw new ZipRejected(`Zip berisi terlalu banyak entry (batas ${limits.maxEntries}).`);
           }
-          const data = await readEntry(zf, e);
+
+          // Lapis 1 (murah, cegah dini): tolak berdasar ukuran yang DIUMUMKAN
+          // di central directory zip — SEBELUM entry dibongkar sama sekali.
+          // Menutup celah "zip bomb" untuk entry yang jujur soal ukurannya
+          // tapi sendirian (atau bersama entry sebelumnya) sudah melebihi
+          // sisa anggaran ekstraksi. `entry.uncompressedSize` dibaca yauzl
+          // dari central directory saat zip dibuka, jadi tersedia di sini
+          // tanpa perlu membongkar apa pun.
+          const remaining = limits.maxTotalBytes - totalBytes;
+          if (e.uncompressedSize > remaining) {
+            throw new ZipRejected(
+              `Entry '${name}' terlalu besar setelah di-extract (header zip menyatakan ` +
+              `${e.uncompressedSize} byte, sisa batas ${remaining} byte) — ditolak sebelum entry dibongkar.`,
+            );
+          }
+
+          // Lapis 2 (defense-in-depth, saat streaming): lihat komentar di
+          // readEntry(). CATATAN EMPIRIS: di yauzl 3.4.0, lapis ini pada
+          // praktiknya nyaris tidak pernah jadi yang PERTAMA menolak — yauzl
+          // sendiri membungkus setiap read-stream dengan AssertByteCountStream
+          // (node_modules/yauzl/index.js) yang menjamin jumlah byte hasil
+          // decompress SAMA PERSIS dengan uncompressedSize di central
+          // directory; begitu menyimpang, yauzl menghentikan stream sebelum
+          // satu byte pun diteruskan ke `data` handler kita (diverifikasi
+          // langsung: entry 500MB nyata dengan header bohong "10 byte" gagal
+          // dalam ~4ms, 0 byte diterima). Jadi header yang bohong sudah
+          // digagalkan yauzl lebih dulu. Lapis ini tetap dipasang supaya
+          // anggaran milik APLIKASI ini sendiri tidak diam-diam bergantung
+          // sepenuhnya pada perilaku internal sebuah dependency pihak ketiga.
+          const data = await readEntry(zf, e, name, remaining, limits.maxTotalBytes);
           totalBytes += data.length;
           if (totalBytes > limits.maxTotalBytes) {
             throw new ZipRejected(
