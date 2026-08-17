@@ -147,6 +147,23 @@ function assertWritableName(name: string): void {
 function topSegment(p: string): string { return p.split("/")[0]; }
 
 /**
+ * Deteksi entry git internal HARUS case-insensitive. Alasannya bukan estetika:
+ * hasil ekstraksi disalin lib/staging.ts ke dalam repo git SUNGGUHAN, lalu
+ * `git add`/`git commit` dijalankan DI SANA sebagai root. Di filesystem yang
+ * case-insensitive (APFS di macOS, mount Linux case-insensitive), entry
+ * bernama `.GIT/config` menunjuk FILE YANG SAMA dengan `.git/config` di level
+ * OS — jadi perbandingan case-sensitive membiarkannya lolos dan ia menimpa
+ * config repo staging SEBELUM git membacanya. `.git/config` yang berisi
+ * mis. `core.fsmonitor = <perintah>` dieksekusi git pada `add`/`status`
+ * berikutnya — sebagai root. Di ext4/xfs (produksi) ini inert, tapi batas
+ * keamanan tidak boleh bergantung pada sifat filesystem tujuan.
+ */
+function isGitInternal(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === ".git" || lower.startsWith(".git/");
+}
+
+/**
  * Fase 3 sudah membangun daftar `planned` lengkap sebelum ada yang ditulis,
  * jadi tabrakan file/direktori bisa dideteksi secara PASTI di sini — bukan
  * ditebak — sebelum Fase 4 mulai menulis. Kasusnya: satu entry adalah file
@@ -250,7 +267,7 @@ export async function extractZip(
   // .git tidak boleh dianggap sebagai kandidat pembungkus — kalau satu-satunya
   // entry top-level kebetulan ".git", itu bukan wrapper project, dan harus
   // tetap ketahuan sebagai .git supaya Fase 3 bisa membuangnya.
-  const nonGit = collected.filter((c) => c.name !== ".git" && !c.name.startsWith(".git/"));
+  const nonGit = collected.filter((c) => !isGitInternal(c.name));
   const tops = new Set(nonGit.map((c) => topSegment(c.name)));
   const hasRootFile = nonGit.some((c) => !c.name.includes("/"));
   let strippedWrapper: string | null = null;
@@ -266,7 +283,7 @@ export async function extractZip(
   // --- Fase 3: buang .git (staging repo punya .git-nya sendiri) ---
   const planned: Planned[] = [];
   for (const c of collected) {
-    if (c.name === ".git" || c.name.startsWith(".git/")) continue;
+    if (isGitInternal(c.name)) continue;
     const finalPath = safeJoin(destDir, c.name);
     planned.push({ relPath: relative(root, finalPath), finalPath, buf: c.buf });
   }

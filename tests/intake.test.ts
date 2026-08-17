@@ -22,6 +22,16 @@ describe("extractZip — keamanan", () => {
     await expect(extractZip(zip, dest, LIMITS)).rejects.toThrow(/keluar dari direktori/i);
   });
 
+  it("menolak traversal gaya Windows (backslash) sama seperti ../", async () => {
+    // lib/intake.ts menormalkan `\` jadi `/` SEBELUM safeJoin dipanggil.
+    // Transform itu sendiri adalah bagian dari batas keamanan: tanpanya
+    // `..\..\pwned.txt` tidak mengandung satu pun `/` sehingga resolve()
+    // memperlakukannya sebagai satu nama file biasa dan zip-slip lolos.
+    const zip = makeZip([{ name: "..\\..\\pwned.txt", data: Buffer.from("x") }]);
+    await expect(extractZip(zip, dest, LIMITS)).rejects.toThrow(/keluar dari direktori/i);
+    expect(await readdir(dest)).toEqual([]);
+  });
+
   it("menolak path absolut", async () => {
     const zip = makeZip([{ name: "/etc/cron.d/pwned", data: Buffer.from("x") }]);
     await expect(extractZip(zip, dest, LIMITS)).rejects.toThrow(/absolut/i);
@@ -64,6 +74,38 @@ describe("extractZip — keamanan", () => {
     const zip = makeZip([{ name: "liar.bin", data: real, declaredSize: 10 }]);
     await expect(extractZip(zip, dest, { maxTotalBytes: 1000, maxEntries: 100 }))
       .rejects.toThrow();
+    expect(await readdir(dest)).toEqual([]);
+  });
+
+  it("menolak akumulasi banyak entry yang masing-masing kecil tapi totalnya melebihi anggaran", async () => {
+    // Tidak ada satu pun entry di sini yang mencurigakan kalau dilihat
+    // sendiri-sendiri: 400 byte, jauh di bawah batas 1000. Yang melanggar
+    // adalah TOTALNYA (1600). Ini menguji bahwa anggaran benar-benar
+    // AKUMULATIF lintas entry — `remaining` menyusut mengikuti `totalBytes`
+    // yang sudah terpakai — bukan dicek per entry secara terpisah.
+    const zip = makeZip(
+      Array.from({ length: 4 }, (_, i) => ({ name: `f${i}.bin`, data: Buffer.alloc(400, i) })),
+    );
+    await expect(extractZip(zip, dest, { maxTotalBytes: 1000, maxEntries: 100 }))
+      .rejects.toThrow(/terlalu besar/i);
+    expect(await readdir(dest)).toEqual([]);
+  });
+
+  it("menolak akumulasi entry yang ukuran nyatanya melebihi anggaran walau header tiap entry mengaku kecil", async () => {
+    // Varian yang sama, tapi tiap header BERBOHONG mengaku 10 byte — jadi
+    // pre-check berbasis `uncompressedSize` tidak pernah menaruh curiga pada
+    // satu entry pun. Yang harus menahan di sini adalah penghitungan byte
+    // NYATA saat streaming. Seperti test "under-declared" di atas, test ini
+    // sengaja menguji HASIL AKHIRNYA secara generik (ditolak, tidak ada yang
+    // tertulis) dan bukan pesan lapis tertentu: mana dari ketiga lapis
+    // (pre-check header, budget saat streaming, cek total setelah baca) yang
+    // menembak duluan adalah detail implementasi — termasuk milik yauzl.
+    const zip = makeZip(
+      Array.from({ length: 4 }, (_, i) => ({
+        name: `f${i}.bin`, data: Buffer.alloc(400, i), declaredSize: 10,
+      })),
+    );
+    await expect(extractZip(zip, dest, { maxTotalBytes: 1000, maxEntries: 100 })).rejects.toThrow();
     expect(await readdir(dest)).toEqual([]);
   });
 
@@ -220,6 +262,21 @@ describe("extractZip — normalisasi", () => {
       { name: "Dockerfile", data: Buffer.from("FROM node") },
       { name: ".git/config", data: Buffer.from("[core]") },
       { name: ".git/HEAD", data: Buffer.from("ref: x") },
+    ]);
+    await extractZip(zip, dest, LIMITS);
+    expect(await readdir(dest)).toEqual(["Dockerfile"]);
+  });
+
+  it("membuang .git dengan huruf besar/campur juga (.GIT/config)", async () => {
+    // Di filesystem case-insensitive (APFS/macOS, mount Linux CI), `.GIT/config`
+    // ADALAH `.git/config` bagi OS — kalau lolos, ia menimpa config repo
+    // staging yang lalu dijalankan `git add`/`commit` sebagai root (lihat
+    // isGitInternal di lib/intake.ts). Filter harus case-insensitive.
+    const zip = makeZip([
+      { name: "Dockerfile", data: Buffer.from("FROM node") },
+      { name: ".GIT/config", data: Buffer.from("[core]\n\tfsmonitor = touch /tmp/pwned") },
+      { name: ".Git/HEAD", data: Buffer.from("ref: x") },
+      { name: ".GIT", data: Buffer.from("x") },
     ]);
     await extractZip(zip, dest, LIMITS);
     expect(await readdir(dest)).toEqual(["Dockerfile"]);
