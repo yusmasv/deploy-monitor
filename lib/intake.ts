@@ -134,18 +134,17 @@ export async function extractZip(
           }
 
           // Lapis 2 (defense-in-depth, saat streaming): lihat komentar di
-          // readEntry(). CATATAN EMPIRIS: di yauzl 3.4.0, lapis ini pada
-          // praktiknya nyaris tidak pernah jadi yang PERTAMA menolak — yauzl
-          // sendiri membungkus setiap read-stream dengan AssertByteCountStream
-          // (node_modules/yauzl/index.js) yang menjamin jumlah byte hasil
-          // decompress SAMA PERSIS dengan uncompressedSize di central
-          // directory; begitu menyimpang, yauzl menghentikan stream sebelum
-          // satu byte pun diteruskan ke `data` handler kita (diverifikasi
-          // langsung: entry 500MB nyata dengan header bohong "10 byte" gagal
-          // dalam ~4ms, 0 byte diterima). Jadi header yang bohong sudah
-          // digagalkan yauzl lebih dulu. Lapis ini tetap dipasang supaya
-          // anggaran milik APLIKASI ini sendiri tidak diam-diam bergantung
-          // sepenuhnya pada perilaku internal sebuah dependency pihak ketiga.
+          // readEntry(). Ini BUKAN dead code meskipun di yauzl 3.4.0 lapis
+          // ini nyaris tidak pernah jadi yang pertama menolak: yauzl sendiri
+          // sudah mencegat header yang bohong lewat AssertByteCountStream
+          // internalnya (node_modules/yauzl/index.js) — tapi itu detail
+          // implementasi INTERNAL, tidak disebut sekali pun di README-nya,
+          // jadi tidak ada jaminan API bahwa itu tetap ada di versi yauzl
+          // berikutnya. Lapis ini adalah asuransi untuk yauzl versi MASA
+          // DEPAN, bukan untuk yauzl 3.4.0 sekarang. Alasan yang sama:
+          // test "under-declares" di intake.test.ts sengaja menguji
+          // rejection secara generik, bukan pesan spesifik Lapis 2 —
+          // karena saat ini yauzl yang menolak duluan, bukan kode ini.
           const data = await readEntry(zf, e, name, remaining, limits.maxTotalBytes);
           totalBytes += data.length;
           if (totalBytes > limits.maxTotalBytes) {
