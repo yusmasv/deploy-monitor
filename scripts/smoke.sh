@@ -6,7 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"; kill "${PID:-0}" 2>/dev/null || true' EXIT
 
-export MONITOR_TOKEN="token-uji"
+# Minimal 24 karakter — lib/config.ts menolak token yang lebih pendek.
+export MONITOR_TOKEN="token-uji-panjang-untuk-smoke-test"
 export EXECUTOR=local
 export DEPLOY_SH="$ROOT/tests/fixtures/fake-deploy.sh"
 export UPLOADS_DIR="$WORK/uploads"
@@ -28,7 +29,7 @@ done
 
 JAR="$WORK/cookies"
 curl -sf -c "$JAR" -X POST "http://localhost:$PORT/api/auth/login" \
-  -H 'content-type: application/json' -d '{"token":"token-uji"}' >/dev/null
+  -H 'content-type: application/json' -d "{\"token\":\"$MONITOR_TOKEN\"}" >/dev/null
 echo "  ok   login"
 
 ID=$(curl -sf -b "$JAR" -X POST "http://localhost:$PORT/api/deploys" \

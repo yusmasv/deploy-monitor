@@ -11,10 +11,26 @@ export interface Config {
   ssh?: { host: string; user: string; keyPath: string };
 }
 
+// Token ini adalah SATU-SATUNYA penjaga endpoint yang menjalankan deploy.sh
+// sebagai root (dan deploy.sh mem-`source` deploy.env dari zip yang diunggah,
+// jadi memiliki token = eksekusi kode sebagai root di build host). Panjang
+// minimum ini menolak token yang bisa ditebak dengan brute force; `openssl
+// rand -hex 32` yang disarankan setup.md menghasilkan 64 karakter, jadi siapa
+// pun yang mengikuti dokumen tidak akan pernah menyentuh batas ini.
+const MIN_TOKEN_LENGTH = 24;
+
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const monitorToken = (env.MONITOR_TOKEN ?? "").trim();
   if (!monitorToken) {
     throw new Error("MONITOR_TOKEN wajib diisi — aplikasi ini menjalankan deploy sebagai root.");
+  }
+  if (monitorToken.length < MIN_TOKEN_LENGTH) {
+    // Panjangnya saja yang disebut, tidak pernah nilainya — pesan ini masuk
+    // journal systemd saat boot gagal.
+    throw new Error(
+      `MONITOR_TOKEN terlalu pendek (${monitorToken.length} karakter, minimal ${MIN_TOKEN_LENGTH}) — ` +
+      `aplikasi ini menjalankan deploy sebagai root. Buat dengan 'openssl rand -hex 32'.`,
+    );
   }
 
   const executor = (env.EXECUTOR ?? "local") as ExecutorKind;
