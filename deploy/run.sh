@@ -157,6 +157,15 @@ apply_env_overrides() {
   local file="${APP_DIR}/app.env.override"
   [ -f "${file}" ] || return 0
 
+  # Secret tidak boleh tertinggal di disk setelah dipakai — trap EXIT (bukan
+  # RETURN) karena run.sh jalan dengan `set -e`: kalau env_set gagal di
+  # tengah loop (disk penuh, permission), shell langsung keluar tanpa pernah
+  # sampai ke baris sesudah loop. RETURN tidak akan terpicu pada abort
+  # semacam itu; hanya EXIT yang terpicu baik pada return normal maupun
+  # abort set -e, jadi ini satu-satunya cara file override selalu terhapus
+  # sukses maupun gagal.
+  trap 'rm -f "${file}"' EXIT
+
   local applied="" line key value
   while IFS= read -r line || [ -n "${line}" ]; do
     case "${line}" in ''|'#'*) continue ;; esac
@@ -171,11 +180,10 @@ apply_env_overrides() {
     applied="${applied}${applied:+, }${key}"
   done < "${file}"
 
-  # Secret tidak boleh tertinggal di disk setelah dipakai.
-  rm -f "${file}"
-
   # Nama key saja — mencetak nilainya akan membocorkan secret ke log deploy.
   [ -n "${applied}" ] && info "app.env: overrode ${applied}"
+  trap - EXIT
+  rm -f "${file}"
   return 0
 }
 
