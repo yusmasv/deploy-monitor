@@ -1,4 +1,5 @@
 import { Client } from "ssh2";
+import type { ClientChannel } from "ssh2";
 import { readFileSync } from "node:fs";
 import type { Executor, LogChunk, RunOpts } from "./types";
 
@@ -30,7 +31,8 @@ export class SshExecutor implements Executor {
 
     const queue: LogChunk[] = [];
     let notify: (() => void) | null = null;
-    const push = (c: LogChunk) => { queue.push(c); notify?.(); notify = null; };
+    const wake = () => { notify?.(); notify = null; };
+    const push = (c: LogChunk) => { queue.push(c); wake(); };
     let done = false;
 
     const buffers = { stdout: "", stderr: "" };
@@ -41,21 +43,35 @@ export class SshExecutor implements Executor {
       for (const l of lines) push({ stream: name, line: l });
     };
 
-    await new Promise<void>((res, rej) => {
+    // Hanya menunggu sampai stream diperoleh dari conn.exec — BUKAN sampai
+    // 'close'. Kalau ditunggu sampai 'close', while-loop di bawah baru mulai
+    // setelah proses jarak jauh selesai, jadi 'notify' masih null selama itu
+    // dan setiap push() dari feed() cuma menumpuk di queue tanpa konsumen
+    // yang mendengarkan — output "streaming" jadi satu semburan di akhir,
+    // bukan baris demi baris seperti local.ts.
+    const stream = await new Promise<ClientChannel>((res, rej) => {
       conn.exec(line, (err, stream) => {
         if (err) return rej(err);
-        stream.on("data", (d: Buffer) => feed("stdout", d.toString("utf8")));
-        stream.stderr.on("data", (d: Buffer) => feed("stderr", d.toString("utf8")));
-        stream.on("close", (code: number) => {
-          for (const n of ["stdout", "stderr"] as const) {
-            if (buffers[n]) push({ stream: n, line: buffers[n] });
-          }
-          push({ stream: "exit", code: code ?? 1 });
-          done = true; notify?.(); notify = null;
-          conn.end(); res();
-        });
+        res(stream);
       });
     });
+
+    // Sama seperti finish() di local.ts: baris terakhir tanpa newline tetap
+    // dikirim, lalu chunk exit, lalu tandai selesai dan bangunkan while-loop.
+    const finish = (code: number) => {
+      if (done) return;
+      for (const n of ["stdout", "stderr"] as const) {
+        if (buffers[n]) { push({ stream: n, line: buffers[n] }); buffers[n] = ""; }
+      }
+      push({ stream: "exit", code });
+      done = true;
+      conn.end();
+      wake();
+    };
+
+    stream.on("data", (d: Buffer) => feed("stdout", d.toString("utf8")));
+    stream.stderr.on("data", (d: Buffer) => feed("stderr", d.toString("utf8")));
+    stream.on("close", (code: number) => finish(code ?? 1));
 
     while (!done || queue.length > 0) {
       if (queue.length === 0) { await new Promise<void>((r) => { notify = r; }); continue; }
