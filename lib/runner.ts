@@ -80,12 +80,22 @@ export class Runner {
           const next = this.queue.shift()!;
           try {
             await this.execute(next.id, next.job);
-          } catch {
+          } catch (err) {
             // execute() sendiri sudah mencatat status "failed" ke DB sebelum
             // melempar apa pun yang tersisa (lihat blok catch/finally di
             // sana) — try/catch ini murni jaring pengaman terakhir supaya
             // satu deploy yang meledak tak terduga tidak pernah menghentikan
             // antrian secara permanen (Finding 2, bagian pump()).
+            //
+            // Satu jalur yang lolos SEBELUM catch milik execute() dimulai:
+            // db.updateDeploy(status "running") di baris pertama execute().
+            // Kalau ITU yang gagal (mis. disk penuh), deploy tertinggal di
+            // "queued" selamanya. Tanpa log di sini tidak ada jejak APA PUN
+            // soal kenapa — operator hanya melihat deploy yang tidak pernah
+            // jalan. Yang dicatat cuma id dan pesan error: tidak pernah ada
+            // nilai env di sini (spec D7).
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[monitor] deploy ${next.id} gagal di luar execute(): ${message}`);
           }
         }
       } finally {
