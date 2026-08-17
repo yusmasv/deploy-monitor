@@ -137,6 +137,50 @@ fi
 # Holds secrets, and env_file is read by the Docker daemon as root.
 chmod 600 "${APP_ENV_FILE}"
 
+# ------------------------------------------------------------------
+# 2b. Env override dari deploy-monitor (opsional)
+# ------------------------------------------------------------------
+# Berbeda dari env_add di bawah: ini MENIMPA nilai yang sudah ada. Dijalankan
+# LEBIH DULU supaya autofill sesudahnya melihat key ini sudah terisi dan tidak
+# menyentuhnya — khususnya gen_secret(), yang tidak akan pernah jalan untuk key
+# yang diisi sendiri oleh user.
+env_set() {
+  local tmp; tmp="$(mktemp)"
+  grep -vE "^[[:space:]]*(export[[:space:]]+)?$1=" "${APP_ENV_FILE}" > "${tmp}" 2>/dev/null || true
+  printf '%s=%s\n' "$1" "$2" >> "${tmp}"
+  # cat, bukan mv: menjaga mode 600 dan inode file aslinya.
+  cat "${tmp}" > "${APP_ENV_FILE}"
+  rm -f "${tmp}"
+}
+
+apply_env_overrides() {
+  local file="${APP_DIR}/app.env.override"
+  [ -f "${file}" ] || return 0
+
+  local applied="" line key value
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in ''|'#'*) continue ;; esac
+    case "${line}" in *=*) ;; *) continue ;; esac
+
+    key="${line%%=*}"
+    value="${line#*=}"
+    # Nilai TIDAK PERNAH di-eval; hanya dipotong sebagai string.
+    case "${key}" in ''|[0-9]*|*[!A-Za-z0-9_]*) continue ;; esac
+
+    env_set "${key}" "${value}"
+    applied="${applied}${applied:+, }${key}"
+  done < "${file}"
+
+  # Secret tidak boleh tertinggal di disk setelah dipakai.
+  rm -f "${file}"
+
+  # Nama key saja — mencetak nilainya akan membocorkan secret ke log deploy.
+  [ -n "${applied}" ] && info "app.env: overrode ${applied}"
+  return 0
+}
+
+apply_env_overrides
+
 ADDED=""
 
 if [ "${DB_KIND}" = "sqlite" ] && ! env_has "${DB_URL_VAR}"; then

@@ -393,6 +393,16 @@ scp "${SSH_OPTS[@]}" "${RESOLVED_CONF}" "${RUNTIME_USER}@${RUNTIME_HOST}:${RUNTI
 
 success "Config shipped."
 
+# Opsional: env override dari deploy-monitor. Tanpa ENV_OVERRIDES_FILE, blok ini
+# tidak melakukan apa pun dan deploy.sh berperilaku persis seperti sebelumnya —
+# pemakaian manual dari console tidak terpengaruh.
+if [ -n "${ENV_OVERRIDES_FILE:-}" ] && [ -s "${ENV_OVERRIDES_FILE}" ]; then
+  action "Shipping env overrides..."
+  scp "${SSH_OPTS[@]}" "${ENV_OVERRIDES_FILE}" \
+    "${RUNTIME_USER}@${RUNTIME_HOST}:${RUNTIME_APPS_DIR}/${PROJECT}/app.env.override"
+  success "Env overrides shipped."
+fi
+
 echo ""
 action "Triggering runtime deployment..."
 
