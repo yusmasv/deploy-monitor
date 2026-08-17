@@ -7,6 +7,13 @@ import { DeploySummary, type DeployDetail } from "./DeploySummary";
 
 interface Line { seq: number; stream: string; text: string }
 
+// Sama dengan TERMINAL di app/api/deploys/[id]/stream/route.ts — begitu deploy
+// selesai, server menutup stream tanpa `retry:` atau status non-200, jadi
+// EventSource bawaan browser tidak bisa membedakan "server menutup dengan
+// sengaja" dari "koneksi putus" dan akan otomatis reconnect selamanya kalau
+// tidak kita tutup sendiri di sini.
+const TERMINAL = new Set(["success", "failed", "interrupted"]);
+
 const COLOR: Record<LogColor, string> = {
   red: "var(--log-red)", green: "var(--log-green)", yellow: "var(--log-yellow)",
   blue: "var(--log-blue)", magenta: "var(--log-magenta)", cyan: "var(--log-cyan)",
@@ -32,6 +39,8 @@ export function LogViewer({ initial }: { initial: DeployDetail }) {
     es.addEventListener("state", (e) => {
       const { deploy: d } = JSON.parse((e as MessageEvent).data) as { deploy: DeployDetail };
       if (d) setDeploy(d);
+      // Deploy sudah selesai — jangan biarkan EventSource reconnect tanpa henti.
+      if (d && TERMINAL.has(d.status)) es.close();
     });
 
     return () => es.close();
