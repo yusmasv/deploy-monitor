@@ -47,10 +47,26 @@ Sebelum meng-zip project-mu, pastikan:
    *Hasil:* nama file dan ukurannya tampil; kolom nama project terisi
    otomatis dari nama file zip.
 4. **Isi nama project** — **harus sama persis** dengan deploy sebelumnya
-   kalau ini pembaruan dari deploy yang sudah ada. Kalau berbeda (walau cuma
-   beda huruf besar/kecil atau tanda baca), Deploy Monitor menganggapnya
-   project **baru**, dan `/srv/data/<project>` lama tidak akan terpakai —
-   datamu tidak hilang, tapi deploy barumu mulai dari database kosong.
+   kalau ini pembaruan dari deploy yang sudah ada. Nama project dinormalisasi
+   dulu sebelum dipakai sebagai nama direktori/database: huruf besar/kecil
+   **tidak dibedakan** (di-lowercase duluan), dan karakter apa pun di luar
+   `a-z`, `0-9`, `.`, `_`, `-` diganti jadi `-`. Konsekuensinya dua arah —
+   dan salah satunya berbahaya:
+   - Kalau nama barumu **bertabrakan** setelah dinormalisasi dengan project
+     yang sudah ada (mis. `MyApp` vs `myapp` — sama persis setelah
+     di-lowercase, atau `my app` vs `my-app` — spasi juga jadi `-`), Deploy
+     Monitor menganggapnya **project yang sama** dan menimpa direktori data
+     serta database yang sudah ada, **diam-diam, tanpa peringatan**.
+   - Kalau nama barumu justru **berbeda** setelah dinormalisasi dari yang
+     kamu maksud (mis. typo, atau karakter yang tidak terduga ikut
+     ter-normalisasi), Deploy Monitor menganggapnya project **baru**:
+     `/srv/data/<project>` lama tidak akan terpakai (datamu di sana tidak
+     hilang, tapi tidak tersentuh — dan deploy barumu mulai dari database
+     kosong, membuatnya *terlihat* seperti data lama hilang).
+
+   Aturan praktisnya: **ketik nama yang persis sama karakter demi karakter**
+   seperti deploy sebelumnya — jangan mengandalkan asumsi bahwa beda huruf
+   besar/kecil atau tanda baca pasti dianggap berbeda oleh sistem.
    *Hasil:* kolom nama project terisi dan tervalidasi.
 5. **Isi env yang perlu diubah** lewat editor variabel environment (opsional
    — lihat §5 untuk semantiknya).
