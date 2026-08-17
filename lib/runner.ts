@@ -10,6 +10,19 @@ import type { ZipLimits } from "./intake";
 
 export interface DeployJob { project: string; zip: Buffer; zipName: string; env: EnvPair[] }
 
+// Direktori (di dalam uploadsDir) tempat file env-override sementara ditulis.
+// HARUS mengandung karakter huruf besar: normalizeProject() (lib/project.ts)
+// selalu memanggil .toLowerCase() sebelum memfilter karakter, jadi keluaran
+// fungsi itu tidak pernah mengandung huruf besar sama sekali. Itu berarti
+// TIDAK ADA nama project yang bisa menghasilkan string yang sama persis
+// dengan OVERRIDES_DIR — jadi prepareStaging() (yang membuat staging git
+// repo di join(uploadsDir, normalizeProject(project))) tidak akan pernah
+// membuat repo git DI DALAM direktori ini. Itu penting karena Runner
+// menyimpan file secret (env override) tepat di direktori ini, DI LUAR
+// staging repo manapun — lihat komentar di execute() soal kenapa override
+// tidak boleh pernah ke-`git add -A`.
+export const OVERRIDES_DIR = ".Overrides";
+
 export interface RunnerOpts {
   db: Db;
   executor: Executor;
@@ -37,7 +50,7 @@ export class Runner {
       envKeys: job.env.map((e) => e.key),   // NAMA saja — spec D7
     });
     this.queue.push({ id, job });
-    bus.emitState({ deployId: id });
+    this.emitState(id);
     this.pump();
     return id;
   }
@@ -45,26 +58,50 @@ export class Runner {
   /** Khusus test. Produksi tidak pernah menunggu antrian kosong. */
   waitForIdle(): Promise<void> { return this.idle; }
 
+  // bus adalah EventEmitter: listener yang throw (mis. rute SSE (Task 13)
+  // yang mencoba menulis ke ReadableStream yang controller-nya sudah
+  // ditutup karena tab browser ditutup — kejadian rutin, bukan kegagalan
+  // aplikasi) membuat emit() melempar SECARA SINKRON ke pemanggilnya.
+  // Kalau dibiarkan menjalar, ia bisa membatalkan while-loop di pump()
+  // (Finding 2): this.active tidak pernah kembali ke false, setiap pump()
+  // berikutnya jadi no-op, dan seluruh antrian macet permanen untuk sisa
+  // umur proses. Semua emisi bus di sini dibungkus supaya listener yang
+  // meledak hanya kehilangan satu event SSE, bukan menjatuhkan antrian.
+  private emitState(deployId: string): void {
+    try { bus.emitState({ deployId }); } catch { /* lihat komentar di atas */ }
+  }
+
   private pump(): void {
     if (this.active) return;
     this.active = true;
     this.idle = (async () => {
-      while (this.queue.length > 0) {
-        const next = this.queue.shift()!;
-        await this.execute(next.id, next.job);
+      try {
+        while (this.queue.length > 0) {
+          const next = this.queue.shift()!;
+          try {
+            await this.execute(next.id, next.job);
+          } catch {
+            // execute() sendiri sudah mencatat status "failed" ke DB sebelum
+            // melempar apa pun yang tersisa (lihat blok catch/finally di
+            // sana) — try/catch ini murni jaring pengaman terakhir supaya
+            // satu deploy yang meledak tak terduga tidak pernah menghentikan
+            // antrian secara permanen (Finding 2, bagian pump()).
+          }
+        }
+      } finally {
+        this.active = false;
       }
-      this.active = false;
     })();
   }
 
   private async execute(id: string, job: DeployJob): Promise<void> {
     const { db } = this.o;
     db.updateDeploy(id, { status: "running", started_at: Date.now() });
-    bus.emitState({ deployId: id });
+    this.emitState(id);
 
     const say = (stream: "stdout" | "stderr", text: string) => {
       const seq = db.appendLine(id, stream, text);
-      bus.emitLine({ deployId: id, seq, stream, ts: Date.now(), text });
+      try { bus.emitLine({ deployId: id, seq, stream, ts: Date.now(), text }); } catch { /* lihat emitState() */ }
       return seq;
     };
 
@@ -86,7 +123,7 @@ export class Runner {
         // working tree git dan proses mati sebelum blok finally menghapusnya,
         // `git add -A` pada upload berikutnya bisa meng-commit-nya ke riwayat —
         // dari mana secret tidak bisa dihapus dengan mudah lagi.
-        overridePath = join(this.o.uploadsDir, ".overrides", `${id}.env`);
+        overridePath = join(this.o.uploadsDir, OVERRIDES_DIR, `${id}.env`);
         await this.o.executor.writeFile(overridePath, serializeOverrides(job.env), 0o600);
         env.ENV_OVERRIDES_FILE = overridePath;
         // Nama key saja. Nilai tidak boleh pernah masuk log.
@@ -107,7 +144,7 @@ export class Runner {
         if (p && p !== phase) {
           phase = p;
           db.updateDeploy(id, { phase });
-          bus.emitState({ deployId: id });
+          this.emitState(id);
         }
         Object.assign(summary, detectSummary(plain) ?? {});
       }
@@ -128,14 +165,20 @@ export class Runner {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      say("stderr", `\x1b[0;31m${message}\x1b[0m`);
+      // Status ditulis DULU, SEBELUM say() di bawah. say() bisa melempar
+      // (mis. db.appendLine gagal) — kalau itu terjadi sebelum status
+      // tercatat, deploy ini akan tertahan selamanya di status "running"
+      // meski sudah pasti gagal (Finding 2, bagian catch). Menulis status
+      // duluan membuat pencatatan log jadi best-effort, tidak pernah
+      // menggerbangi (gate) pencatatan status.
       db.updateDeploy(id, { status: "failed", error: message, ended_at: Date.now() });
+      say("stderr", `\x1b[0;31m${message}\x1b[0m`);
     } finally {
       // Sukses maupun gagal, secret tidak boleh tertinggal di disk.
       if (overridePath) {
         await this.o.executor.remove(overridePath).catch(() => {});
       }
-      bus.emitState({ deployId: id });
+      this.emitState(id);
     }
   }
 }

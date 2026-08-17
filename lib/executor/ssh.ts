@@ -1,6 +1,7 @@
 import { Client } from "ssh2";
 import type { ClientChannel } from "ssh2";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Executor, LogChunk, RunOpts } from "./types";
 
 /**
@@ -80,6 +81,15 @@ export class SshExecutor implements Executor {
   }
 
   async writeFile(path: string, data: string, mode: number): Promise<void> {
+    // Kontrak Executor.writeFile (lib/executor/types.ts) mewajibkan membuat
+    // direktori induk yang belum ada — LocalExecutor melakukannya lewat
+    // mkdir({recursive:true}). Runner mengandalkan ini: path override env
+    // (lib/runner.ts) selalu berada di subdirektori (mis. OVERRIDES_DIR)
+    // yang belum tentu sudah ada di VPS tujuan. SFTP sendiri tidak punya
+    // mkdir rekursif, jadi paling murah dipenuhi lewat `mkdir -p` via shell
+    // memakai this.run() yang sudah ada, sebelum sftp.writeFile dipanggil.
+    await this.mkdirp(dirname(path));
+
     const conn = await this.connect();
     await new Promise<void>((res, rej) => {
       conn.sftp((err, sftp) => {
@@ -87,6 +97,14 @@ export class SshExecutor implements Executor {
         sftp.writeFile(path, data, { mode }, (e) => { conn.end(); e ? rej(e) : res(); });
       });
     });
+  }
+
+  private async mkdirp(dir: string): Promise<void> {
+    for await (const c of this.run("mkdir", ["-p", dir], {})) {
+      if (c.stream === "exit" && c.code !== 0) {
+        throw new Error(`Gagal membuat direktori '${dir}' di remote host (exit ${c.code}).`);
+      }
+    }
   }
 
   async remove(path: string): Promise<void> {

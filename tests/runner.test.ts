@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openDb, type Db } from "../lib/db";
 import { LocalExecutor } from "../lib/executor/local";
-import { Runner } from "../lib/runner";
+import { Runner, OVERRIDES_DIR } from "../lib/runner";
+import { bus } from "../lib/bus";
+import { normalizeProject } from "../lib/project";
 import { makeZip } from "./helpers/zip";
 import { stripAnsi } from "../lib/phases";
 
@@ -127,5 +129,47 @@ describe("Runner", () => {
     const d = db.getDeploy(id)!;
     expect(d.status).toBe("failed");
     expect(d.error).toMatch(/keluar dari direktori/i);
+  });
+
+  // Finding 1: tidak ada nama project yang bisa membuat prepareStaging()
+  // menaruh staging git repo tepat di direktori tempat Runner menulis file
+  // override. normalizeProject() SELALU men-toLowerCase() input sebelum
+  // memfilter karakter, jadi keluarannya tidak pernah mengandung huruf
+  // besar — properti ini berlaku untuk STRING apapun, tidak cuma nama
+  // project "masuk akal", jadi cukup dibuktikan sekali lewat OVERRIDES_DIR
+  // itu sendiri sebagai kasus yang paling mungkin menabrak (karena namanya
+  // sengaja dibuat mirip skema lama).
+  it("nama direktori override tidak pernah bisa dihasilkan normalizeProject", () => {
+    expect(OVERRIDES_DIR).not.toBe(OVERRIDES_DIR.toLowerCase());
+    expect(normalizeProject(OVERRIDES_DIR)).not.toBe(OVERRIDES_DIR);
+    // Konsekuensi langsungnya: upload dengan nama project apapun yang
+    // "kelihatan seperti" OVERRIDES_DIR (mis. huruf kecil semua) tetap
+    // menghasilkan direktori staging yang berbeda dari direktori override.
+    expect(normalizeProject(OVERRIDES_DIR.toLowerCase())).not.toBe(OVERRIDES_DIR);
+  });
+
+  // Finding 2: listener bus yang throw (mis. rute SSE menulis ke stream
+  // yang sudah ditutup) tidak boleh pernah menjatuhkan antrian secara
+  // permanen. Deploy kedua harus tetap selesai walau deploy pertama
+  // memicu exception di setiap listener 'state:'/'line:'-nya.
+  it("tidak macet walau listener bus melempar exception", async () => {
+    const boom = () => { throw new Error("simulasi: listener SSE meledak"); };
+
+    const a = await runner.enqueue({ project: "app", zip: zip(), zipName: "a.zip", env: [] });
+    bus.on(`state:${a}`, boom);
+    bus.on(`line:${a}`, boom);
+
+    try {
+      const b = await runner.enqueue({ project: "app", zip: zip(), zipName: "b.zip", env: [] });
+      await runner.waitForIdle();
+
+      // Deploy 'a' sendiri tidak boleh gagal gara-gara listener orang lain.
+      expect(db.getDeploy(a)!.status).toBe("success");
+      // Antrian tidak macet: deploy 'b' tetap jalan sampai selesai.
+      expect(db.getDeploy(b)!.status).toBe("success");
+    } finally {
+      bus.off(`state:${a}`, boom);
+      bus.off(`line:${a}`, boom);
+    }
   });
 });
