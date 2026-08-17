@@ -12,7 +12,7 @@ export function EnvEditor({ value, onChange }: { value: EnvPair[]; onChange: (v:
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <label className="text-sm font-medium">Environment variable</label>
+        <label className="text-sm font-medium">Variabel environment</label>
         <span className="text-xs text-[var(--muted)]">
           Menimpa per-key. Yang tidak diisi tidak tersentuh.
         </span>
