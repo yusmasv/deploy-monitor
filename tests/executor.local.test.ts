@@ -43,4 +43,31 @@ describe("LocalExecutor", () => {
     const got = await collect(ex.run("sh", ["-c", "echo $HALO"], { env: { HALO: "dunia" } }));
     expect(got[0].line).toBe("dunia");
   });
+
+  // Regression: badan `for await` milik konsumen yang MELEMPAR (di produksi:
+  // db.appendLine gagal, mis. SQLITE_FULL, di dalam Runner.execute) membuat
+  // runtime memanggil .return() pada generator ini. Sebelum fix, child
+  // process-nya tidak pernah dibunuh — deploy.sh jadi proses root yatim yang
+  // terus berjalan sementara Runner sudah men-spawn deploy.sh berikutnya.
+  it("membunuh child process kalau konsumen meninggalkan generator karena error", async () => {
+    let pid = 0;
+    // `echo $$` dari `sh -c` mencetak pid sh itu sendiri — yaitu child yang
+    // di-spawn, bukan cucu. `sleep 30` menjaga ia tetap hidup jauh melewati
+    // durasi test kalau fix-nya tidak bekerja.
+    const consume = async () => {
+      for await (const c of ex.run("sh", ["-c", "echo $$; sleep 30"], {})) {
+        if (c.stream === "stdout") {
+          pid = Number(c.line);
+          throw new Error("konsumen meledak");
+        }
+      }
+    };
+
+    await expect(consume()).rejects.toThrow("konsumen meledak");
+    expect(pid).toBeGreaterThan(0);
+
+    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 100 && alive(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(alive()).toBe(false);
+  });
 });

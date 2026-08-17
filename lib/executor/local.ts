@@ -50,9 +50,25 @@ export class LocalExecutor implements Executor {
     // hanya perlu menangani satu jenis kegagalan.
     child.on("error", (err) => { push({ stream: "stderr", line: String(err.message) }); finish(127); });
 
-    while (!done || queue.length > 0) {
-      if (queue.length === 0) { await new Promise<void>((r) => { notify = r; }); continue; }
-      yield queue.shift()!;
+    // try/finally, BUKAN sekadar loop telanjang. Kalau konsumen meninggalkan
+    // generator ini lebih awal — `break` di tengah `for await`, atau (yang
+    // berbahaya) badan loop konsumen MELEMPAR, mis. db.appendLine gagal
+    // SQLITE_FULL di Runner.execute — runtime otomatis memanggil .return()
+    // pada generator ini. Tanpa finally, generator sekadar berhenti dan
+    // child process-nya TIDAK pernah dibunuh: deploy.sh terus jalan sebagai
+    // root tanpa dipantau, output-nya dibuang, sementara pump() sudah
+    // melanjutkan ke job berikutnya dan men-spawn deploy.sh KEDUA yang
+    // merebut direktori build yang sama (invariant concurrency-1 jebol).
+    // `done` baru true setelah finish() — jadi pada jalur normal (generator
+    // habis sendiri, atau konsumen break setelah menerima chunk 'exit')
+    // blok ini no-op.
+    try {
+      while (!done || queue.length > 0) {
+        if (queue.length === 0) { await new Promise<void>((r) => { notify = r; }); continue; }
+        yield queue.shift()!;
+      }
+    } finally {
+      if (!done) child.kill("SIGTERM");
     }
   }
 
