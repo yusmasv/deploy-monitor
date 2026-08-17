@@ -33,6 +33,18 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     };
   }
 
+  let maxZipBytes = 200 * 1024 * 1024;
+  if (env.MAX_ZIP_BYTES !== undefined) {
+    const raw = env.MAX_ZIP_BYTES;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error(
+        `MAX_ZIP_BYTES harus berupa bilangan bulat positif, bukan '${raw}'.`,
+      );
+    }
+    maxZipBytes = parsed;
+  }
+
   return {
     monitorToken,
     executor,
@@ -40,7 +52,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     uploadsDir: env.UPLOADS_DIR ?? "/srv/uploads",
     dbPath: env.DB_PATH ?? "/srv/monitor/monitor.db",
     publicHost: (env.PUBLIC_HOST ?? "").trim(),
-    maxZipBytes: Number(env.MAX_ZIP_BYTES ?? 200 * 1024 * 1024),
+    maxZipBytes,
     ssh,
   };
 }
