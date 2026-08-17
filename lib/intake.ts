@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { mkdir, writeFile, rename, rm, rmdir } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { randomUUID } from "node:crypto";
 import yauzl from "yauzl";
 
 export interface ZipLimits { maxTotalBytes: number; maxEntries: number }
@@ -9,7 +10,19 @@ export class ZipRejected extends Error {
   constructor(public reason: string) { super(reason); this.name = "ZipRejected"; }
 }
 
-interface Planned { path: string; buf: Buffer }
+interface Planned { relPath: string; finalPath: string; buf: Buffer }
+
+/**
+ * Bungkus nama entry (asal dari zip, sepenuhnya dikendalikan penyerang)
+ * sebelum masuk ke pesan error mana pun. Pesan-pesan ini adalah "reason"
+ * yang dilihat pengguna DAN mengalir ke log viewer aplikasi ini — kalau
+ * nama entry mengandung newline, itu bisa memalsukan baris log
+ * (mis. entry bernama `x\n[ERROR] deploy sukses\n`). JSON.stringify
+ * meng-escape newline, tanda kutip, dan karakter kontrol lainnya sekaligus.
+ */
+function escapeForMessage(name: string): string {
+  return JSON.stringify(name);
+}
 
 function openZip(buf: Buffer): Promise<yauzl.ZipFile> {
   return new Promise((res, rej) =>
@@ -45,7 +58,7 @@ function readEntry(
     zf.openReadStream(e, (err, rs) => {
       if (err || !rs) {
         settled = true;
-        return rej(new ZipRejected(`Gagal membaca entry '${e.fileName}'.`));
+        return rej(new ZipRejected(`Gagal membaca entry ${escapeForMessage(name)}.`));
       }
       const chunks: Buffer[] = [];
       let size = 0;
@@ -57,7 +70,7 @@ function readEntry(
           rs.destroy();
           rej(new ZipRejected(
             `Isi zip terlalu besar setelah di-extract (melebihi batas ${maxTotalBytes} byte ` +
-            `saat streaming entry '${name}').`,
+            `saat streaming entry ${escapeForMessage(name)}).`,
           ));
           return;
         }
@@ -71,7 +84,7 @@ function readEntry(
       rs.on("error", () => {
         if (settled) return;
         settled = true;
-        rej(new ZipRejected(`Entry '${e.fileName}' rusak.`));
+        rej(new ZipRejected(`Entry ${escapeForMessage(name)} rusak.`));
       });
     });
   });
@@ -80,22 +93,76 @@ function readEntry(
 /** Satu-satunya penjaga terhadap zip-slip. Mengembalikan path absolut yang aman. */
 function safeJoin(destDir: string, entryName: string): string {
   if (entryName.startsWith("/") || /^[a-zA-Z]:/.test(entryName)) {
-    throw new ZipRejected(`Entry '${entryName}' memakai path absolut — ditolak.`);
+    throw new ZipRejected(`Entry ${escapeForMessage(entryName)} memakai path absolut — ditolak.`);
   }
   const root = resolve(destDir);
   const full = resolve(root, entryName);
-  if (full !== root && !full.startsWith(root + sep)) {
-    throw new ZipRejected(`Entry '${entryName}' menunjuk keluar dari direktori tujuan — ditolak.`);
+  // '.', '' dan 'a/..' semuanya me-resolve ke destDir itu sendiri. Tidak ada
+  // entry FILE yang sah bisa menghasilkan ini — kalau lolos sampai Fase 4,
+  // writeFile(destDir, ...) gagal dengan EISDIR dan pesannya bukan ZipRejected
+  // (bahasa Inggris, salah diklasifikasikan sebagai fault internal). Matikan
+  // di sini, di Fase 1, bukan sebagai error filesystem nanti.
+  if (full === root) {
+    throw new ZipRejected(
+      `Entry ${escapeForMessage(entryName)} me-resolve ke direktori tujuan itu sendiri — bukan path file yang valid, ditolak.`,
+    );
+  }
+  if (!full.startsWith(root + sep)) {
+    throw new ZipRejected(`Entry ${escapeForMessage(entryName)} menunjuk keluar dari direktori tujuan — ditolak.`);
   }
   return full;
 }
 
+/**
+ * Nama yang mengandung byte kontrol (termasuk NUL) bukan nama file yang
+ * valid: fs.writeFile/mkdir melempar TypeError (ERR_INVALID_ARG_VALUE),
+ * bukan error zip yang bisa kita tangani rapi sebagai ZipRejected — dan
+ * newline di nama adalah vektor pemalsuan log (lihat escapeForMessage).
+ * Ditolak di sini, di Fase 1, sebelum entry sempat direncanakan untuk ditulis.
+ */
+function assertWritableName(name: string): void {
+  if (/[\x00-\x1f]/.test(name)) {
+    throw new ZipRejected(
+      `Entry ${escapeForMessage(name)} mengandung karakter kontrol pada namanya — ditolak.`,
+    );
+  }
+}
+
 function topSegment(p: string): string { return p.split("/")[0]; }
+
+/**
+ * Fase 3 sudah membangun daftar `planned` lengkap sebelum ada yang ditulis,
+ * jadi tabrakan file/direktori bisa dideteksi secara PASTI di sini — bukan
+ * ditebak — sebelum Fase 4 mulai menulis. Kasusnya: satu entry adalah file
+ * di path X, entry lain butuh X sebagai direktori induknya (mis. "a.txt"
+ * lalu "a.txt/b"). Kalau lolos ke Fase 4, mkdir(X) gagal EEXIST dan entry
+ * sebelumnya sudah keburu tertulis.
+ */
+function detectPathCollision(planned: Planned[], root: string): void {
+  const filePaths = new Set(planned.map((p) => p.finalPath));
+  const neededDirs = new Set<string>();
+  for (const p of planned) {
+    let dir = dirname(p.finalPath);
+    while (dir !== root && !neededDirs.has(dir)) {
+      neededDirs.add(dir);
+      dir = dirname(dir);
+    }
+  }
+  for (const dir of neededDirs) {
+    if (filePaths.has(dir)) {
+      throw new ZipRejected(
+        `Zip berisi entry yang saling bertabrakan: ${escapeForMessage(relative(root, dir))} ` +
+        `dibutuhkan sebagai direktori oleh satu entry, tapi entry lain menjadikannya file — ditolak.`,
+      );
+    }
+  }
+}
 
 export async function extractZip(
   buf: Buffer, destDir: string, limits: ZipLimits,
 ): Promise<ExtractResult> {
   const zf = await openZip(buf);
+  const root = resolve(destDir);
 
   // --- Fase 1: baca & validasi SEMUANYA di memori. Belum ada yang ditulis. ---
   const collected: { name: string; buf: Buffer }[] = [];
@@ -112,6 +179,7 @@ export async function extractZip(
           const name = rawName.replace(/\\/g, "/");   // path gaya Windows
           if (name.endsWith("/")) return zf.readEntry();          // direktori: lewati
 
+          assertWritableName(name);                                // lempar kalau bukan nama file yang valid
           safeJoin(destDir, name);                                 // lempar kalau tidak aman
 
           if (collected.length + 1 > limits.maxEntries) {
@@ -128,7 +196,7 @@ export async function extractZip(
           const remaining = limits.maxTotalBytes - totalBytes;
           if (e.uncompressedSize > remaining) {
             throw new ZipRejected(
-              `Entry '${name}' terlalu besar setelah di-extract (header zip menyatakan ` +
+              `Entry ${escapeForMessage(name)} terlalu besar setelah di-extract (header zip menyatakan ` +
               `${e.uncompressedSize} byte, sisa batas ${remaining} byte) — ditolak sebelum entry dibongkar.`,
             );
           }
@@ -183,17 +251,67 @@ export async function extractZip(
   const planned: Planned[] = [];
   for (const c of collected) {
     if (c.name === ".git" || c.name.startsWith(".git/")) continue;
-    planned.push({ path: safeJoin(destDir, c.name), buf: c.buf });
+    const finalPath = safeJoin(destDir, c.name);
+    planned.push({ relPath: relative(root, finalPath), finalPath, buf: c.buf });
   }
 
   if (planned.length === 0) {
     throw new ZipRejected("Zip tidak berisi file apa pun yang bisa dideploy.");
   }
 
-  // --- Fase 4: baru sekarang menulis ---
-  for (const p of planned) {
-    await mkdir(dirname(p.path), { recursive: true });
-    await writeFile(p.path, p.buf);
+  // Tabrakan file/direktori: pasti terdeteksi sekarang, dari daftar planned
+  // yang sudah lengkap — bukan ditemukan nanti sebagai EEXIST di tengah
+  // menulis dengan sebagian entry sebelumnya sudah tertulis.
+  detectPathCollision(planned, root);
+
+  // --- Fase 4: baru sekarang menulis — semua-atau-tidak-sama-sekali ---
+  // Setiap entry ditulis dulu ke direktori staging DI DALAM destDir (jadi
+  // dijamin satu filesystem yang sama dengan tujuan akhir, supaya rename()
+  // di bawah murah & tidak butuh ruang disk baru), baru dipindah dengan
+  // rename() ke lokasi akhirnya. destDir sendiri tidak tersentuh sampai
+  // SEMUA entry selesai ditulis ke staging. Kalau penulisan ke staging gagal
+  // di tengah jalan (mis. ENOSPC — disk penuh di host ini pernah benar-benar
+  // terjadi di sesi pengerjaan task ini), destDir belum pernah disentuh sama
+  // sekali dan `finally` di bawah membuang staging beserta isinya. Kalau
+  // justru proses PEMINDAHAN (rename) yang gagal di tengah jalan, entry yang
+  // SUDAH terlanjur pindah ke destDir di-rollback (dihapus) di blok catch,
+  // supaya tidak ada sisa entry ke-1..ke-(n-1) yang tertinggal.
+  const stagingDir = join(destDir, `.zip-extract-${randomUUID()}`);
+  await mkdir(stagingDir, { recursive: true });
+  const movedFinalPaths: string[] = [];
+  try {
+    for (const p of planned) {
+      const stagingPath = join(stagingDir, p.relPath);
+      await mkdir(dirname(stagingPath), { recursive: true });
+      await writeFile(stagingPath, p.buf);
+    }
+    for (const p of planned) {
+      const stagingPath = join(stagingDir, p.relPath);
+      await mkdir(dirname(p.finalPath), { recursive: true });
+      await rename(stagingPath, p.finalPath);
+      movedFinalPaths.push(p.finalPath);
+    }
+  } catch (err) {
+    // Rollback: buang entry yang sudah sempat dipindah ke destDir, dan
+    // rapikan direktori kosong yang baru saja dibuat untuknya. Ini BUKAN
+    // masalah zip (validasi di Fase 1-3 sudah lolos) — jadi error asli
+    // (mis. ENOSPC dari Node) dilempar ulang apa adanya, tidak dibungkus
+    // jadi ZipRejected.
+    for (const finalPath of movedFinalPaths) {
+      await rm(finalPath, { force: true }).catch(() => {});
+      // rmdir (bukan rm) sengaja dipakai: rmdir HANYA berhasil kalau
+      // direktorinya benar-benar kosong (ENOTEMPTY kalau tidak) — rm() tanpa
+      // {recursive:true} justru selalu gagal EISDIR untuk direktori apa pun,
+      // kosong ataupun tidak, jadi tidak cocok dipakai di sini.
+      let dir = dirname(finalPath);
+      while (dir !== root) {
+        try { await rmdir(dir); } catch { break; }   // berhenti begitu direktori tidak kosong/sudah hilang
+        dir = dirname(dir);
+      }
+    }
+    throw err;
+  } finally {
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 
   return { fileCount: planned.length, totalBytes, strippedWrapper };
