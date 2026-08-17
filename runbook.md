@@ -139,6 +139,7 @@ bisa dibatalkan begitu saja:
 | `migrate : <none>` padahal app punya DB | Deteksi gagal | **Hentikan** — lihat `DEPLOYMENT.md` aturan no. 9 |
 | `drizzle-kit: not found` | Image di-prune, devDependencies hilang | Jangan `pnpm install --prod` |
 | Status `Terputus` | Service monitor restart di tengah deploy | Cek `journalctl -u deploy-monitor`; kemungkinan OOM |
+| Deploy diam di `Antri` atau `Berjalan` sangat lama, log tidak bertambah | Tidak ada batas waktu deploy: satu langkah yang menggantung (mis. `docker build` atau `scp` yang tidak pernah selesai) menahan antrian yang cuma punya satu pekerja — deploy berikutnya ikut tertahan di `Antri` | `systemctl restart deploy-monitor`. Deploy yang macet ditandai `Terputus` saat service naik lagi dan antrian bebas kembali; unggah ulang zip-nya. Cek juga `journalctl -u deploy-monitor` untuk penyebab langkah yang menggantung |
 
 ## 7. Yang tetap manual di VPS2
 

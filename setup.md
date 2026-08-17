@@ -146,14 +146,24 @@ Keterangan tiap variabel (semuanya dibaca oleh `lib/config.ts`):
 
 | Variabel | Wajib? | Keterangan |
 |---|---|---|
-| `MONITOR_TOKEN` | **Wajib** | Aplikasi gagal start kalau kosong — ini juga token login UI (dipakai sebagai cookie), karena aplikasi menjalankan `deploy.sh` sebagai root. |
-| `EXECUTOR` | Tidak (default `local`) | `local` kalau `deploy.sh` dijalankan langsung di VPS1 ini (kasus paling umum, sesuai arsitektur di §1). `ssh` hanya kalau Deploy Monitor dipasang di host **lain**, terpisah dari VPS1 build host. |
-| `SSH_HOST` / `SSH_USER` / `SSH_KEY` | Hanya kalau `EXECUTOR=ssh` | Alamat, user, dan path private key untuk SSH ke VPS1 build host. |
+| `MONITOR_TOKEN` | **Wajib** | Aplikasi gagal start kalau kosong **atau kurang dari 24 karakter** — ini juga token login UI (dipakai sebagai cookie), karena aplikasi menjalankan `deploy.sh` sebagai root. `openssl rand -hex 32` di atas menghasilkan 64 karakter, jadi jauh di atas batas. |
+| `EXECUTOR` | Tidak (default `local`) | **Produksi selalu `local`** — Deploy Monitor dipasang langsung di VPS1 dan menjalankan `deploy.sh` di sana. `ssh` **hanya untuk pengembangan dari laptop** (`npm run dev`), jangan pernah dipakai produksi — lihat peringatan di bawah tabel. |
+| `SSH_HOST` / `SSH_USER` / `SSH_KEY` | Hanya kalau `EXECUTOR=ssh` (development) | Alamat, user, dan path private key untuk SSH ke VPS1 build host. |
 | `DEPLOY_SH` | Tidak (default `/srv/platform/deploy.sh`) | Path `deploy.sh` di VPS1 (lihat `deploy/DEPLOYMENT.md` §5 Langkah 2 — script ini sudah kamu pasang di sana sebelumnya). |
 | `UPLOADS_DIR` | Tidak (default `/srv/uploads`) | Tempat staging git repo dari zip yang diunggah. Butuh ruang disk yang cukup untuk source project terbesar yang akan kamu deploy. |
 | `DB_PATH` | Tidak (default `/srv/monitor/monitor.db`) | File SQLite riwayat deploy milik aplikasi ini sendiri (bukan database aplikasi yang dideploy). |
 | `PUBLIC_HOST` | Tidak | IP atau host VPS2, dipakai untuk merakit URL live yang ditampilkan di UI setelah deploy sukses. |
-| `MAX_ZIP_BYTES` | Tidak (default 200 MB) | Batas ukuran zip yang boleh diunggah, dalam byte. |
+| `MAX_ZIP_BYTES` | Tidak (default 200 MB) | Batas ukuran zip yang boleh diunggah, dalam byte — **dan sekaligus batas total ukuran isinya setelah di-extract**, karena angka yang sama dipakai untuk kedua pemeriksaan. Jadi zip 50 MB yang mengembang jadi 300 MB tetap ditolak walau file zip-nya sendiri jauh di bawah batas. |
+
+> **`EXECUTOR=ssh` bukan pilihan produksi.** Dalam mode itu `deploy.sh`
+> berjalan sebagai anak dari channel SSH, jadi gangguan jaringan sekecil apa
+> pun mengirim SIGHUP dan **membunuh build di tengah jalan** — termasuk
+> kemungkinan tepat saat langkah migrasi database sedang berjalan, yang bisa
+> meninggalkan database setengah termigrasi. Mode ini ada semata untuk
+> menjalankan Deploy Monitor dari laptop (`npm run dev`) sambil menguji ke
+> VPS1 sungguhan. Produksi memasang Deploy Monitor **di VPS1 itu sendiri**
+> dengan `EXECUTOR=local`, sehingga deploy tidak bergantung pada jaringan
+> sama sekali (lihat komentar di `lib/executor/ssh.ts`).
 
 Buat juga direktori `UPLOADS_DIR`-nya kalau belum ada:
 
@@ -195,6 +205,17 @@ firewall (`ufw allow 3000/tcp` atau setara). Keamanannya bergantung
 **sepenuhnya** pada `MONITOR_TOKEN`: siapa pun yang tahu token bisa login dan
 memicu deploy.
 
+Perlu disadari betul untuk pilihan ini: tidak ada TLS di depan aplikasi
+(setup ini tidak memasang reverse proxy penerminasi TLS), jadi koneksinya
+polos HTTP dan **`MONITOR_TOKEN` melintas dalam bentuk teks terbuka pada
+setiap request** — saat login maupun lewat cookie di semua request
+sesudahnya. Siapa pun yang bisa mengintip jalur jaringan antara browsermu dan
+VPS1 (Wi-Fi publik, jaringan kantor, hop di antaranya) bisa membaca token itu
+apa adanya, dan token = kemampuan menjalankan kode sebagai root di VPS1. Ini
+alasan kuat memilih pilihan (b) di bawah kalau kamu bisa mengaturnya: lewat
+SSH tunnel, seluruh lalu lintas termasuk token terenkripsi oleh SSH dan port
+3000 tidak pernah menyentuh internet.
+
 **(b) Bind ke `127.0.0.1`, akses lewat SSH tunnel.** Ubah `ExecStart` di unit
 systemd (langkah 4) menjadi `next start --hostname 127.0.0.1 --port 3000`,
 lalu dari laptop:
@@ -220,6 +241,13 @@ journalctl -u deploy-monitor -f
 Lalu buka UI (`http://<ip-VPS1>:3000` atau `http://localhost:3000` kalau
 lewat tunnel) dan login memakai `MONITOR_TOKEN` yang dibuat di langkah 5.
 
+Kalau kamu ingin memverifikasi lebih dalam (mis. setelah `git pull` versi
+baru), repo ini punya tiga lapis pemeriksaan yang bisa dijalankan langsung:
+`npm test` (unit test), `npm run test:scripts` (verifikasi `deploy.sh` untuk
+env override, termasuk bahwa file berisi secret selalu terhapus walau proses
+gagal di tengah), dan `npm run test:smoke` (menjalankan server sungguhan
+dengan `deploy.sh` palsu, tanpa butuh docker maupun VPS2).
+
 ## 9. Catatan RAM
 
 `docker build` (dipicu `deploy.sh` untuk tiap deploy) bisa memakan RAM besar
@@ -234,3 +262,11 @@ mkswap /swapfile
 swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
+
+Selain build, unggahan itu sendiri juga memakan RAM: seluruh zip dibaca ke
+memori dulu, lalu isi hasil ekstraksinya ditahan di memori sebelum ada satu
+byte pun ditulis ke disk. Perkirakan **puncak sekitar 2x ukuran zip** untuk
+tiap unggahan (zip + isinya, dan keduanya sama-sama dibatasi
+`MAX_ZIP_BYTES`) — dengan default 200 MB itu berarti ratusan MB sesaat, di
+atas pemakaian `docker build` yang menyusul. Kalau RAM VPS1 tipis, turunkan
+`MAX_ZIP_BYTES` di samping menambah swap.
