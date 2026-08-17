@@ -30,12 +30,28 @@ export function UploadForm() {
     body.set("project", project);
     body.set("env", JSON.stringify(env.filter((p) => p.key.trim())));
 
-    const res = await fetch("/api/deploys", { method: "POST", body });
-    const data = await res.json();
-    setBusy(false);
+    // setBusy(false) WAJIB di finally. Sebelumnya ia berada di baris SETELAH
+    // res.json(): body respons yang bukan JSON (halaman error HTML dari Next,
+    // halaman timeout dari proxy) membuat res.json() melempar, baris itu tidak
+    // pernah jalan, dan form terjebak selamanya di keadaan "Mengunggah…"
+    // dengan tombol mati dan tanpa satu pun pesan error — satu-satunya jalan
+    // keluar adalah reload halaman.
+    try {
+      const res = await fetch("/api/deploys", { method: "POST", body });
+      const data = await res.json().catch(() => null);
 
-    if (!res.ok) return setError(data.error ?? "Gagal memulai deploy.");
-    router.push(`/deploys/${data.id}`);
+      if (!res.ok) {
+        return setError(data?.error ?? "Gagal memulai deploy.");
+      }
+      if (!data?.id) {
+        return setError("Gagal memproses respons server.");
+      }
+      router.push(`/deploys/${data.id}`);
+    } catch {
+      setError("Gagal menghubungi server.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

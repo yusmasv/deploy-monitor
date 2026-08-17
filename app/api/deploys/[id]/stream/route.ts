@@ -22,17 +22,26 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
+
+      // enqueue() DIBUNGKUS try/catch di sini, di dalam send() itu sendiri —
+      // bukan hanya di ping. send() dipanggil SINKRON dari dalam
+      // EventEmitter.emit() (lewat bus.on di bawah), dan kalau ia melempar di
+      // sana, Node menghentikan emit itu: listener LAIN yang terdaftar
+      // SESUDAH listener mati ini tidak pernah dipanggil untuk event tersebut.
+      // Artinya satu tab browser yang sudah ditutup (enqueue ke controller
+      // yang mati -> throw) bisa menelan baris log milik SEMUA tab lain yang
+      // sedang menonton deploy yang sama, sampai ping (20 detik!) menyadari
+      // koneksi itu mati dan melepasnya. Menangkap di sini mengisolasi
+      // kegagalan tiap koneksi pada dirinya sendiri.
       const send = (event: string, data: unknown, eventId?: number) => {
         if (closed) return;
-        const idLine = eventId === undefined ? "" : `id: ${eventId}\n`;
-        controller.enqueue(encoder.encode(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        try {
+          const idLine = eventId === undefined ? "" : `id: ${eventId}\n`;
+          controller.enqueue(encoder.encode(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          finish();
+        }
       };
-
-      // 1. Putar ulang dari database dulu.
-      for (const l of db.getLines(id, resume)) {
-        send("line", { seq: l.seq, stream: l.stream, text: l.text }, l.seq);
-      }
-      send("state", { deploy: db.getDeploy(id) });
 
       const onLine = (e: LineEvent) => send("line", { seq: e.seq, stream: e.stream, text: e.text }, e.seq);
       const onState = () => {
@@ -46,19 +55,21 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       // lain tidak menjangkaunya — kalau koneksi sudah mati duluan sebelum
       // event 'abort' sempat kita terima, enqueue() bisa melempar, dan kalau
       // itu tidak ditangkap di sini akan jadi uncaught exception di dalam
-      // callback setInterval (bisa merobohkan proses). Callback ini baru bisa
-      // terpanggil setelah timer-nya menyala, jauh setelah start() (dan
-      // deklarasi finish di bawah) selesai dieksekusi — beda dengan bus.on di
-      // bawah yang bisa terpicu sinkron, jadi tidak ada masalah TDZ di sini.
+      // callback setInterval (bisa merobohkan proses).
       const ping = setInterval(() => {
         if (closed) return;
         try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { finish(); }
       }, 20000);
 
-      // finish HARUS dideklarasikan sebelum bus.on di bawah. onState memanggil
-      // finish, jadi kalau listener terpasang lebih dulu dan sebuah event tiba
-      // di jendela itu, finish masih berada di temporal dead zone dan melempar
-      // ReferenceError.
+      // finish HARUS sudah terinisialisasi sebelum apa pun yang bisa
+      // memanggilnya benar-benar DIJALANKAN: onState memanggilnya, dan
+      // sekarang send() juga (lewat catch di atas) — termasuk send() pada
+      // putar-ulang database di bawah, yang jalan sinkron di dalam start().
+      // Itu sebabnya putar-ulang dipindah ke BAWAH deklarasi ini; kalau tetap
+      // di atas, satu enqueue yang gagal saat replay akan memanggil finish
+      // yang masih di temporal dead zone dan melempar ReferenceError —
+      // persis kelas bug yang sudah pernah diperbaiki di file ini untuk
+      // onState/bus.on.
       const finish = () => {
         if (closed) return;
         closed = true;
@@ -70,7 +81,18 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
 
       req.signal.addEventListener("abort", finish);
 
-      // 2. Baru menyambung ke siaran langsung.
+      // 1. Putar ulang dari database dulu.
+      for (const l of db.getLines(id, resume)) {
+        send("line", { seq: l.seq, stream: l.stream, text: l.text }, l.seq);
+      }
+      send("state", { deploy: db.getDeploy(id) });
+
+      // 2. Baru menyambung ke siaran langsung — TAPI hanya kalau koneksi ini
+      // masih hidup. Kalau putar-ulang di atas sudah memanggil finish (klien
+      // memutus di tengah replay), memasang listener sekarang berarti
+      // memasangnya SESUDAH bus.off di finish sempat jalan: listener itu tidak
+      // akan pernah dilepas dan bocor di EventEmitter selamanya.
+      if (closed) return;
       bus.on(`line:${id}`, onLine);
       bus.on(`state:${id}`, onState);
 

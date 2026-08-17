@@ -40,7 +40,16 @@ export async function POST(req: Request) {
     );
   }
 
-  const form = await req.formData();
+  // Body multipart yang rusak/terpotong (koneksi putus di tengah unggahan,
+  // boundary tidak valid) membuat formData() MELEMPAR. Tanpa dibungkus, Next
+  // membalas halaman error HTML 500 — bukan JSON — dan klien yang menunggu
+  // JSON ikut tersedak (lihat catatan di components/UploadForm.tsx).
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return Response.json({ error: "Gagal membaca isi permintaan." }, { status: 400 });
+  }
 
   const file = form.get("zip");
   if (!(file instanceof File)) {
