@@ -227,9 +227,14 @@ describe("normalizeProject", () => {
     expect(normalizeProject("app_v2.1")).toBe("app_v2.1");  // '_' '.' aman
   });
 
-  it("membuang '-' hanya di akhir, seperti ${PROJECT%-}", () => {
-    expect(normalizeProject("app--")).toBe("app-");
-    expect(normalizeProject("-app")).toBe("-app");
+  it("membuang SEMUA tanda hubung di akhir, bukan cuma satu", () => {
+    // deploy.sh:71 (${PROJECT%-}) hanya membuang satu. Kalau kita ikut membuang
+    // satu, "app--" jadi "app-", lalu deploy.sh menurunkan PROJECT="app" —
+    // berbeda dari nama direktori kita. Hasil kita harus TITIK-TETAP dari
+    // aturan deploy.sh, dan itu berarti tanpa sisa tanda hubung di akhir.
+    expect(normalizeProject("app--")).toBe("app");
+    expect(normalizeProject("app-")).toBe("app");
+    expect(normalizeProject("-app")).toBe("-app");   // di awal tidak disentuh
   });
 
   it("idempoten — syarat mutlak karena deploy.sh menormalkan ulang basename kita", () => {
@@ -265,7 +270,11 @@ Expected: FAIL — modul belum ada
 // /srv/data/<project> yang lama tidak akan ditemukan.
 export function normalizeProject(raw: string): string {
   let s = raw.toLowerCase().replace(/[^a-z0-9._-]/g, "-");
-  s = s.replace(/-$/, ""); // hanya SATU, persis seperti ${PROJECT%-}
+  // SEMUA tanda hubung di akhir, bukan satu seperti ${PROJECT%-}. Alasannya:
+  // hasil fungsi ini dipakai sebagai nama direktori, lalu deploy.sh mengambil
+  // basename-nya dan menerapkan ${PROJECT%-} sekali lagi. Kalau kita menyisakan
+  // satu tanda hubung, PROJECT milik deploy.sh berbeda dari nama direktori kita.
+  s = s.replace(/-+$/, "");
 
   if (s === "" || s === "." || s === "..") {
     throw new Error(
@@ -485,7 +494,14 @@ interface Planned { path: string; buf: Buffer }
 
 function openZip(buf: Buffer): Promise<yauzl.ZipFile> {
   return new Promise((res, rej) =>
-    yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zf) =>
+    // decodeStrings:false DISENGAJA. Dengan default (true), yauzl menjalankan
+    // validateFileName sendiri dan menolak segmen '..' serta path absolut
+    // SEBELUM event 'entry' sampai ke sini — sehingga safeJoin() tidak pernah
+    // terpanggil untuk kasus yang justru paling penting, dan test keamanan di
+    // bawah malah menguji perilaku library, bukan kode kita. Batas keamanan
+    // harus milik kita sendiri supaya bisa diuji langsung. Konsekuensinya
+    // fileName datang sebagai Buffer dan kita decode sendiri.
+    yauzl.fromBuffer(buf, { lazyEntries: true, decodeStrings: false }, (err, zf) =>
       err || !zf ? rej(new ZipRejected("File yang diunggah bukan file zip yang valid.")) : res(zf),
     ),
   );
@@ -531,7 +547,11 @@ export async function extractZip(
     zf.on("entry", (e: yauzl.Entry) => {
       void (async () => {
         try {
-          const name = e.fileName.replace(/\\/g, "/");
+          // decodeStrings:false -> fileName adalah Buffer, bukan string.
+          const rawName = Buffer.isBuffer(e.fileName)
+            ? e.fileName.toString("utf8")
+            : String(e.fileName);
+          const name = rawName.replace(/\\/g, "/");   // path gaya Windows
           if (name.endsWith("/")) return zf.readEntry();          // direktori: lewati
 
           safeJoin(destDir, name);                                 // lempar kalau tidak aman
@@ -693,6 +713,7 @@ Expected: FAIL — modul belum ada
 ```ts
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, rm, cp, readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -750,13 +771,15 @@ export async function prepareStaging(
 }
 
 async function initRepo(dir: string): Promise<void> {
-  try {
-    await git(dir, "rev-parse", "--git-dir");
-  } catch {
-    // -b main memastikan HEAD -> refs/heads/main, yang jadi origin/HEAD setelah
-    // deploy.sh meng-clone-nya — itulah yang dibaca deploy.sh:109.
-    await exec("git", ["init", "-b", "main", dir]);
-  }
+  // Cek keberadaan .git SECARA LANGSUNG, jangan pakai `rev-parse --git-dir`:
+  // rev-parse BERHASIL kalau direktori induk mana pun kebetulan sebuah repo,
+  // sehingga kita akan melewati init lalu `git add -A` dan `commit` beroperasi
+  // pada repo induk itu — meng-commit isi upload ke repo yang sama sekali salah.
+  if (existsSync(join(dir, ".git"))) return;
+
+  // -b main memastikan HEAD -> refs/heads/main, yang jadi origin/HEAD setelah
+  // deploy.sh meng-clone-nya — itulah yang dibaca deploy.sh:109.
+  await exec("git", ["init", "-b", "main", dir]);
 }
 ```
 
@@ -987,7 +1010,7 @@ git commit -m "feat: validasi dan serialisasi env override"
 import { describe, it, expect } from "vitest";
 import { parseAnsi } from "../lib/ansi";
 
-const E = "";
+const E = "\x1b";
 
 describe("parseAnsi", () => {
   it("mengurai warna yang dipakai deploy.sh", () => {
@@ -1040,7 +1063,7 @@ const COLORS: Record<number, LogColor> = {
 
 // Semua escape CSI. Yang berakhiran 'm' adalah SGR (warna); sisanya (gerakan
 // kursor dari docker) dibuang.
-const CSI = /\[([0-9;]*)([A-Za-z])/g;
+const CSI = /\x1b\[([0-9;]*)([A-Za-z])/g;
 
 export function parseAnsi(line: string): Span[] {
   const spans: Span[] = [];
@@ -1154,7 +1177,7 @@ describe("detectSummary", () => {
 
 describe("stripAnsi", () => {
   it("membuang escape sebelum pencocokan", () => {
-    expect(stripAnsi("[0;35mBuilding image...[0m")).toBe("Building image...");
+    expect(stripAnsi("\x1b[0;35mBuilding image...\x1b[0m")).toBe("Building image...");
   });
 });
 ```
@@ -1199,7 +1222,7 @@ const MARKERS: [RegExp, string][] = [
 ];
 
 export function stripAnsi(line: string): string {
-  return line.replace(/\[[0-9;]*[A-Za-z]/g, "");
+  return line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 }
 
 export function detectPhase(plainLine: string): string | null {
@@ -1313,7 +1336,7 @@ describe("log_lines", () => {
 
   it("menyimpan teks mentah termasuk ANSI", () => {
     seed();
-    const raw = "[0;32mok[0m";
+    const raw = "\x1b[0;32mok\x1b[0m";
     db.appendLine("d1", "stdout", raw);
     expect(db.getLines("d1", 0)[0].text).toBe(raw);
   });
@@ -1516,7 +1539,7 @@ describe("LocalExecutor", () => {
 
   it("mempertahankan escape ANSI apa adanya", async () => {
     const got = await collect(ex.run("printf", ["\\033[0;32mok\\033[0m\\n"], {}));
-    expect(got[0].line).toBe("[0;32mok[0m");
+    expect(got[0].line).toBe("\x1b[0;32mok\x1b[0m");
   });
 
   it("mengirim exit code sebagai chunk terakhir", async () => {
@@ -1599,7 +1622,11 @@ export class LocalExecutor implements Executor {
     attach("stderr");
 
     let done = false;
+    // Dijaga: spawn yang gagal (ENOENT) bisa memancarkan 'error' DAN 'close',
+    // dan tanpa penjaga ini dua chunk exit terkirim — konsumen membaca exit
+    // code yang salah.
     const finish = (code: number) => {
+      if (done) return;
       // Baris terakhir tanpa newline tetap harus terkirim.
       for (const name of ["stdout", "stderr"] as const) {
         if (buffers[name]) { push({ stream: name, line: buffers[name] }); buffers[name] = ""; }
@@ -1878,7 +1905,7 @@ describe("Runner", () => {
 
     expect(text(id)).toContain("gagal-di-stderr");
     expect(db.getLines(id, 0).some((l) => l.stream === "stderr")).toBe(true);
-    expect(db.getLines(id, 0).some((l) => l.text.includes("["))).toBe(true);
+    expect(db.getLines(id, 0).some((l) => l.text.includes("\x1b["))).toBe(true);
   });
 
   it("memajukan fase mengikuti penanda", async () => {
@@ -2029,18 +2056,22 @@ export class Runner {
         project: job.project, zip: job.zip,
         uploadsDir: this.o.uploadsDir, limits: this.o.limits,
       });
-      say("stdout", `[0;36mMenerima ${extract.fileCount} file dari ${job.zipName}.[0m`);
+      say("stdout", `\x1b[0;36mMenerima ${extract.fileCount} file dari ${job.zipName}.\x1b[0m`);
       if (extract.strippedWrapper) {
-        say("stdout", `[0;36mMelepas direktori pembungkus '${extract.strippedWrapper}'.[0m`);
+        say("stdout", `\x1b[0;36mMelepas direktori pembungkus '${extract.strippedWrapper}'.\x1b[0m`);
       }
 
       const env: Record<string, string> = { ...this.o.extraEnv };
       if (job.env.length > 0) {
-        overridePath = join(dir, ".env-overrides");
+        // DI LUAR staging repo, disengaja. Kalau file secret ini ada di dalam
+        // working tree git dan proses mati sebelum blok finally menghapusnya,
+        // `git add -A` pada upload berikutnya bisa meng-commit-nya ke riwayat —
+        // dari mana secret tidak bisa dihapus dengan mudah lagi.
+        overridePath = join(this.o.uploadsDir, ".overrides", `${id}.env`);
         await this.o.executor.writeFile(overridePath, serializeOverrides(job.env), 0o600);
         env.ENV_OVERRIDES_FILE = overridePath;
         // Nama key saja. Nilai tidak boleh pernah masuk log.
-        say("stdout", `[0;36mEnv override: ${job.env.map((e) => e.key).join(", ")}[0m`);
+        say("stdout", `\x1b[0;36mEnv override: ${job.env.map((e) => e.key).join(", ")}\x1b[0m`);
       }
 
       const summary: { sha?: string; image?: string; appPort?: number } = {};
@@ -2078,7 +2109,7 @@ export class Runner {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      say("stderr", `[0;31m${message}[0m`);
+      say("stderr", `\x1b[0;31m${message}\x1b[0m`);
       db.updateDeploy(id, { status: "failed", error: message, ended_at: Date.now() });
     } finally {
       // Sukses maupun gagal, secret tidak boleh tertinggal di disk.
@@ -2150,6 +2181,11 @@ ADMIN_EMAIL=baru@x.com
 SMTP_PASS=p@ss/w&rd$(whoami)`id`
 CONN=postgres://u:p@h:5432/db?a=1&b=2
 EOF
+
+# apply_env_overrides memanggil info(), yang didefinisikan di run.sh di luar
+# rentang yang diambil sed di bawah. Tanpa stub ini, "command not found"
+# tercetak ke stderr setiap kali test jalan.
+info() { :; }
 
 # Ambil fungsi + blok override langsung dari run.sh yang sebenarnya.
 eval "$(sed -n '/^env_set()/,/^}/p' "$(dirname "$0")/../../deploy/run.sh")"
@@ -2270,7 +2306,7 @@ git commit -m "feat: env override per-key dari deploy-monitor ke app.env"
 ### Task 12: Auth dan API deploy
 
 **Files:**
-- Create: `lib/auth.ts`, `lib/server.ts`, `app/api/auth/login/route.ts`, `app/api/deploys/route.ts`, `app/api/deploys/[id]/route.ts`, `app/api/deploys/[id]/logs/route.ts`, `tests/auth.test.ts`
+- Create: `lib/token.ts`, `lib/auth.ts`, `lib/server.ts`, `app/api/auth/login/route.ts`, `app/api/deploys/route.ts`, `app/api/deploys/[id]/route.ts`, `app/api/deploys/[id]/logs/route.ts`, `tests/auth.test.ts`
 
 **Interfaces:**
 - Consumes: `Runner` (Task 10), `Db` (Task 8), `getConfig` (Task 1), `validateEnv`/`parseDotenv` (Task 5), `normalizeProject` (Task 2)
@@ -2282,7 +2318,10 @@ git commit -m "feat: env override per-key dari deploy-monitor ke app.env"
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { tokenMatches } from "../lib/auth";
+// Dari lib/token, BUKAN lib/auth: lib/auth mengimpor next/headers pada level
+// modul, yang gagal dimuat di lingkungan node Vitest tanpa runtime Next dan
+// akan membuat seluruh file test ini error sebelum satu assertion pun jalan.
+import { tokenMatches } from "../lib/token";
 
 describe("tokenMatches", () => {
   it("menerima token yang benar", () => {
@@ -2301,12 +2340,12 @@ describe("tokenMatches", () => {
 Run: `npm test -- tests/auth.test.ts`
 Expected: FAIL — modul belum ada
 
-- [ ] **Step 3: Implementasi `lib/auth.ts`**
+- [ ] **Step 3a: Implementasi `lib/token.ts`**
+
+Modul murni — tanpa impor `next/*` — supaya bisa diuji langsung di Vitest.
 
 ```ts
 import { timingSafeEqual } from "node:crypto";
-import { cookies } from "next/headers";
-import { getConfig } from "./config";
 
 export const COOKIE_NAME = "dm_token";
 
@@ -2317,6 +2356,16 @@ export function tokenMatches(expected: string, given: string): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
+```
+
+- [ ] **Step 3b: Implementasi `lib/auth.ts`**
+
+```ts
+import { cookies } from "next/headers";
+import { getConfig } from "./config";
+import { COOKIE_NAME, tokenMatches } from "./token";
+
+export { COOKIE_NAME, tokenMatches };
 
 export async function isAuthed(): Promise<boolean> {
   const jar = await cookies();
@@ -2560,13 +2609,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
         if (d && TERMINAL.has(d.status)) finish();
       };
 
-      // 2. Baru menyambung ke siaran langsung.
-      bus.on(`line:${id}`, onLine);
-      bus.on(`state:${id}`, onState);
-
       // Proxy memutus koneksi yang diam; komentar SSE menahannya tetap hidup.
       const ping = setInterval(() => { if (!closed) controller.enqueue(encoder.encode(": ping\n\n")); }, 20000);
 
+      // finish HARUS dideklarasikan sebelum bus.on di bawah. onState memanggil
+      // finish, jadi kalau listener terpasang lebih dulu dan sebuah event tiba
+      // di jendela itu, finish masih berada di temporal dead zone dan melempar
+      // ReferenceError.
       const finish = () => {
         if (closed) return;
         closed = true;
@@ -2577,6 +2626,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       };
 
       req.signal.addEventListener("abort", finish);
+
+      // 2. Baru menyambung ke siaran langsung.
+      bus.on(`line:${id}`, onLine);
+      bus.on(`state:${id}`, onState);
 
       const current = db.getDeploy(id);
       if (current && TERMINAL.has(current.status)) finish();
@@ -3365,20 +3418,28 @@ ID=$(curl -sf -b "$JAR" -X POST "http://localhost:$PORT/api/deploys" \
   -F 'env=[{"key":"SMTP_PASS","value":"JANGAN_BOCOR"}]' | sed 's/.*"id":"\([^"]*\)".*/\1/')
 echo "  ok   deploy dimulai: $ID"
 
+STATUS=""
 for _ in $(seq 1 60); do
   STATUS=$(curl -sf -b "$JAR" "http://localhost:$PORT/api/deploys/$ID" | sed 's/.*"status":"\([^"]*\)".*/\1/')
-  [ "$STATUS" = "success" ] || [ "$STATUS" = "failed" ] && break
+  if [ "$STATUS" = "success" ] || [ "$STATUS" = "failed" ]; then break; fi
   sleep 0.5
 done
 
 LOGS=$(curl -sf -b "$JAR" "http://localhost:$PORT/api/deploys/$ID/logs?plain=1")
 
 fail() { echo "  FAIL $1"; exit 1; }
-[ "$STATUS" = "success" ]                        || fail "status = $STATUS"
-echo "$LOGS" | grep -q "Building image"          || fail "penanda fase tidak ada di log"
-echo "$LOGS" | grep -q "JANGAN_BOCOR"            && fail "NILAI ENV BOCOR KE LOG"
-echo "$LOGS" | grep -q "SMTP_PASS"               || fail "nama key env tidak dicatat"
-[ -d "$UPLOADS_DIR/uji-coba/.git" ]              || fail "nama project tidak dinormalkan jadi 'uji-coba'"
+
+# Setiap pengecekan memakai if/then, BUKAN `cmd && fail` atau `cmd || fail`.
+# Dengan `set -e`, sebuah compound `A && B` yang berakhir false mematikan skrip
+# tanpa pesan — dan untuk pengecekan NEGATIF di bawah, "tidak ditemukan" justru
+# kasus suksesnya. Ditulis dengan `&&`, assertion kebocoran secret akan selalu
+# terlihat lulus dengan cara keluar diam-diam sebelum sempat memeriksa apa pun.
+if [ "$STATUS" != "success" ]; then fail "status = ${STATUS:-<kosong>}"; fi
+if ! echo "$LOGS" | grep -q "Building image"; then fail "penanda fase tidak ada di log"; fi
+if echo "$LOGS" | grep -q "JANGAN_BOCOR"; then fail "NILAI ENV BOCOR KE LOG"; fi
+if ! echo "$LOGS" | grep -q "SMTP_PASS"; then fail "nama key env tidak dicatat"; fi
+if [ ! -d "$UPLOADS_DIR/uji-coba/.git" ]; then fail "nama project tidak dinormalkan jadi 'uji-coba'"; fi
+if [ -e "$UPLOADS_DIR/uji-coba/.env-overrides" ]; then fail "file override tertinggal di staging repo"; fi
 
 echo "  ok   status sukses, fase tercatat, nilai env tidak bocor, nama dinormalkan"
 echo "UJI ASAP LULUS"
