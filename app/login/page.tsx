@@ -20,11 +20,12 @@ export default function LoginPage() {
     });
     setBusy(false);
     if (res.ok) return router.push("/");
-    // Rute login sekarang bisa membalas 429 (throttle percobaan gagal) selain
-    // 401. Tanpa memakai pesan dari server, operator yang sedang terkunci
-    // hanya melihat "Token salah." dan mengira token-nya yang keliru — lalu
-    // terus mencoba, memperpanjang kuncian. `.catch` menjaga body non-JSON
-    // (halaman error proxy) tidak melempar di sini.
+    // Rute login tidak pernah menolak percobaan (throttle-nya berupa
+    // penundaan, lihat lib/rate-limit.ts), tapi selain 401 ia masih bisa
+    // membalas 400 untuk body yang tidak terbaca. Pesan dari server dipakai
+    // apa adanya supaya operator tidak salah menyimpulkan token-nya keliru
+    // padahal masalahnya lain. `.catch` menjaga body non-JSON (halaman error
+    // proxy) tidak melempar di sini.
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
     setError(data?.error ?? "Token salah.");
   }
