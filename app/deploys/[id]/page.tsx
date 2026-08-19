@@ -19,7 +19,7 @@ export default async function DeployPage(
   return (
     <main className="mx-auto max-w-6xl space-y-4 p-6">
       <Link href="/" className="text-xs text-[var(--muted)] hover:text-[var(--text)]">
-        ← Semua deployment
+        ← All deployments
       </Link>
       <LogViewer initial={deploy as unknown as DeployDetail} />
     </main>

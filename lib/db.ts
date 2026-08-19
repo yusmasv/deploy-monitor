@@ -61,14 +61,22 @@ export class Db {
     ).run(d.id, d.project, Date.now(), d.zipName, d.zipSize, JSON.stringify(d.envKeys));
   }
 
+  // node:sqlite returns rows as null-prototype objects (Object.getPrototypeOf
+  // === null). JSON.stringify doesn't care, but Next.js's Server->Client
+  // Component prop serialization does — it rejects anything that isn't a
+  // plain Object.prototype object, so passing a raw row into a "use client"
+  // component throws at render time. Spreading into a fresh object fixes the
+  // prototype without touching field values.
   getDeploy(id: string): DeployRow | undefined {
-    return this.sql.prepare(`SELECT * FROM deploys WHERE id = ?`).get(id) as DeployRow | undefined;
+    const row = this.sql.prepare(`SELECT * FROM deploys WHERE id = ?`).get(id) as DeployRow | undefined;
+    return row ? { ...row } : undefined;
   }
 
   listDeploys(limit: number): DeployRow[] {
-    return this.sql.prepare(
+    const rows = this.sql.prepare(
       `SELECT * FROM deploys ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     ).all(limit) as unknown as DeployRow[];
+    return rows.map((r) => ({ ...r }));
   }
 
   updateDeploy(id: string, patch: DeployPatch): void {

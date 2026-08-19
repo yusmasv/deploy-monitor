@@ -9,7 +9,7 @@ export interface DeploySummary {
 
 export function DeployList({ deploys, activeId }: { deploys: DeploySummary[]; activeId?: string }) {
   if (deploys.length === 0) {
-    return <p className="px-3 py-6 text-center text-sm text-[var(--muted)]">Belum ada deployment.</p>;
+    return <p className="px-3 py-6 text-center text-sm text-[var(--muted)]">No deployments yet.</p>;
   }
 
   return (

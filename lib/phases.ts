@@ -1,13 +1,13 @@
 export interface Phase { id: string; label: string }
 
 export const PHASES: readonly Phase[] = [
-  { id: "source",    label: "Sumber" },
-  { id: "configure", label: "Konfigurasi" },
+  { id: "source",    label: "Source" },
+  { id: "configure", label: "Configuration" },
   { id: "build",     label: "Build" },
   { id: "push",      label: "Push" },
-  { id: "ship",      label: "Kirim Config" },
+  { id: "ship",      label: "Ship Config" },
   { id: "runtime",   label: "Runtime" },
-  { id: "migrate",   label: "Migrasi" },
+  { id: "migrate",   label: "Migrate" },
   { id: "start",     label: "Start" },
   { id: "health",    label: "Health Check" },
 ] as const;

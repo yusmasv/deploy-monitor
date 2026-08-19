@@ -57,7 +57,7 @@ if [ "$STATUS" != "success" ]; then fail "status = ${STATUS:-<kosong>}"; fi
 if ! echo "$LOGS" | grep -q "Building image"; then fail "penanda fase tidak ada di log"; fi
 if echo "$LOGS" | grep -q "JANGAN_BOCOR"; then fail "NILAI ENV BOCOR KE LOG"; fi
 if ! echo "$LOGS" | grep -q "SMTP_PASS"; then fail "nama key env tidak dicatat"; fi
-if [ ! -d "$UPLOADS_DIR/uji-coba/.git" ]; then fail "nama project tidak dinormalkan jadi 'uji-coba'"; fi
+if [ ! -f "$UPLOADS_DIR/uji-coba/Dockerfile" ]; then fail "nama project tidak dinormalkan jadi 'uji-coba'"; fi
 # CATATAN: file override BUKAN ditulis di dalam staging repo project
 # ($UPLOADS_DIR/<project>/.env-overrides — desain awal, sebelum Task 10).
 # Sejak review Task 10 (Finding 6 + ronde perbaikan berikutnya), file

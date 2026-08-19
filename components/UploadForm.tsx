@@ -41,14 +41,14 @@ export function UploadForm() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        return setError(data?.error ?? "Gagal memulai deploy.");
+        return setError(data?.error ?? "Failed to start deploy.");
       }
       if (!data?.id) {
-        return setError("Gagal memproses respons server.");
+        return setError("Failed to process server response.");
       }
       router.push(`/deploys/${data.id}`);
     } catch {
-      setError("Gagal menghubungi server.");
+      setError("Failed to reach server.");
     } finally {
       setBusy(false);
     }
@@ -75,15 +75,15 @@ export function UploadForm() {
             </span>
           ) : (
             <>
-              <span className="text-[var(--accent)]">Pilih file zip</span>
-              <span className="text-[var(--muted)]"> atau seret ke sini</span>
+              <span className="text-[var(--accent)]">Choose a zip file</span>
+              <span className="text-[var(--muted)]"> or drag it here</span>
             </>
           )}
         </label>
       </div>
 
       <div>
-        <label className="text-sm font-medium">Nama project</label>
+        <label className="text-sm font-medium">Project name</label>
         <input
           value={project}
           onChange={(e) => setProject(e.target.value)}
@@ -91,7 +91,7 @@ export function UploadForm() {
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--panel-2)] px-2 py-1.5 font-mono text-sm outline-none focus:border-[var(--accent)]"
         />
         <p className="mt-1 text-xs text-[var(--muted)]">
-          Harus sama dengan deploy sebelumnya agar data lama tetap terpakai.
+          Must match the previous deploy so existing data keeps being used.
         </p>
       </div>
 
@@ -103,7 +103,7 @@ export function UploadForm() {
         disabled={!file || !project || busy}
         className="w-full rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
       >
-        {busy ? "Mengunggah…" : "Deploy"}
+        {busy ? "Uploading…" : "Deploy"}
       </button>
     </form>
   );

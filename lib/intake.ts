@@ -147,16 +147,14 @@ function assertWritableName(name: string): void {
 function topSegment(p: string): string { return p.split("/")[0]; }
 
 /**
- * Deteksi entry git internal HARUS case-insensitive. Alasannya bukan estetika:
- * hasil ekstraksi disalin lib/staging.ts ke dalam repo git SUNGGUHAN, lalu
- * `git add`/`git commit` dijalankan DI SANA sebagai root. Di filesystem yang
- * case-insensitive (APFS di macOS, mount Linux case-insensitive), entry
- * bernama `.GIT/config` menunjuk FILE YANG SAMA dengan `.git/config` di level
- * OS — jadi perbandingan case-sensitive membiarkannya lolos dan ia menimpa
- * config repo staging SEBELUM git membacanya. `.git/config` yang berisi
- * mis. `core.fsmonitor = <perintah>` dieksekusi git pada `add`/`status`
- * berikutnya — sebagai root. Di ext4/xfs (produksi) ini inert, tapi batas
- * keamanan tidak boleh bergantung pada sifat filesystem tujuan.
+ * Deteksi entry git internal, case-insensitive. lib/staging.ts TIDAK LAGI
+ * membuat repo git dari hasil ekstraksi (sejak folder plain menggantikan
+ * staging git repo) — jadi ini bukan lagi kontrol keamanan terhadap
+ * `git add`/`git commit` yang berjalan sebagai root seperti sebelumnya.
+ * Filter ini dipertahankan sebagai kebersihan murni: `.git` milik project
+ * yang di-zip user (kalau ada) tidak perlu ikut masuk ke build context yang
+ * dibaca `docker build`. Case-insensitive dipertahankan juga tanpa alasan
+ * keamanan lagi — sekadar konsisten dan murah.
  */
 function isGitInternal(name: string): boolean {
   const lower = name.toLowerCase();
@@ -280,7 +278,7 @@ export async function extractZip(
     }
   }
 
-  // --- Fase 3: buang .git (staging repo punya .git-nya sendiri) ---
+  // --- Fase 3: buang .git milik project (lihat komentar isGitInternal) ---
   const planned: Planned[] = [];
   for (const c of collected) {
     if (isGitInternal(c.name)) continue;

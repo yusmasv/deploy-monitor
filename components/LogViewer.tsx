@@ -65,10 +65,10 @@ export function LogViewer({ initial }: { initial: DeployDetail }) {
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Cari di log…"
+            placeholder="Search log…"
             className="flex-1 rounded-md border border-[var(--border)] bg-[var(--panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--accent)]"
           />
-          <span className="shrink-0 text-xs text-[var(--muted)]">{shown.length} baris</span>
+          <span className="shrink-0 text-xs text-[var(--muted)]">{shown.length} lines</span>
         </div>
 
         <div
@@ -81,7 +81,7 @@ export function LogViewer({ initial }: { initial: DeployDetail }) {
         >
           {shown.length === 0 && (
             <p className="text-[var(--muted)]">
-              {deploy.status === "queued" ? "Menunggu giliran…" : "Menunggu output…"}
+              {deploy.status === "queued" ? "Waiting in queue…" : "Waiting for output…"}
             </p>
           )}
           {shown.map((l) => (
@@ -106,7 +106,7 @@ export function LogViewer({ initial }: { initial: DeployDetail }) {
             onClick={() => setStick(true)}
             className="mt-2 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted)] hover:text-[var(--text)]"
           >
-            ↓ Ikuti log terbaru
+            ↓ Follow latest log
           </button>
         )}
       </div>
@@ -114,7 +114,7 @@ export function LogViewer({ initial }: { initial: DeployDetail }) {
       <aside className="order-1 space-y-3 lg:order-2">
         <DeploySummary d={deploy} />
         <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-          <h3 className="mb-2 text-xs font-medium text-[var(--muted)]">Tahapan</h3>
+          <h3 className="mb-2 text-xs font-medium text-[var(--muted)]">Stages</h3>
           <PhaseTimeline phase={deploy.phase} status={deploy.status} />
         </div>
       </aside>

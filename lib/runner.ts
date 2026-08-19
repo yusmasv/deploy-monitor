@@ -15,12 +15,12 @@ export interface DeployJob { project: string; zip: Buffer; zipName: string; env:
 // selalu memanggil .toLowerCase() sebelum memfilter karakter, jadi keluaran
 // fungsi itu tidak pernah mengandung huruf besar sama sekali. Itu berarti
 // TIDAK ADA nama project yang bisa menghasilkan string yang sama persis
-// dengan OVERRIDES_DIR — jadi prepareStaging() (yang membuat staging git
-// repo di join(uploadsDir, normalizeProject(project))) tidak akan pernah
-// membuat repo git DI DALAM direktori ini. Itu penting karena Runner
-// menyimpan file secret (env override) tepat di direktori ini, DI LUAR
-// staging repo manapun — lihat komentar di execute() soal kenapa override
-// tidak boleh pernah ke-`git add -A`.
+// dengan OVERRIDES_DIR — jadi prepareStaging() (yang menulis isi upload ke
+// join(uploadsDir, normalizeProject(project))) tidak akan pernah menimpa
+// atau membaca direktori ini. Itu penting karena Runner menyimpan file
+// secret (env override) tepat di sini, DI LUAR direktori project manapun —
+// lihat komentar di execute() soal kenapa override tidak boleh pernah ikut
+// masuk ke build context yang dibaca `docker build`.
 export const OVERRIDES_DIR = ".Overrides";
 
 export interface RunnerOpts {
@@ -129,10 +129,12 @@ export class Runner {
 
       const env: Record<string, string> = { ...this.o.extraEnv };
       if (job.env.length > 0) {
-        // DI LUAR staging repo, disengaja. Kalau file secret ini ada di dalam
-        // working tree git dan proses mati sebelum blok finally menghapusnya,
-        // `git add -A` pada upload berikutnya bisa meng-commit-nya ke riwayat —
-        // dari mana secret tidak bisa dihapus dengan mudah lagi.
+        // DI LUAR direktori project, disengaja. `dir` adalah persis apa yang
+        // dibaca deploy.sh sebagai build context (`docker build`) — kalau
+        // file secret ini ditulis di dalam `dir`, ia berisiko ikut ter-COPY
+        // ke dalam layer image walau tidak pernah disebut di Dockerfile
+        // (mis. lewat `COPY . .` yang umum). Menaruhnya di direktori terpisah
+        // memastikan itu mustahil terjadi, bukan sekadar "biasanya aman".
         overridePath = join(this.o.uploadsDir, OVERRIDES_DIR, `${id}.env`);
         await this.o.executor.writeFile(overridePath, serializeOverrides(job.env), 0o600);
         env.ENV_OVERRIDES_FILE = overridePath;

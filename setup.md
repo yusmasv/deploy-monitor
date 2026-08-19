@@ -110,12 +110,12 @@ Kutip tunggal pada `'EOF'` di sini juga sengaja: baris `ExecStart` di atas
 tidak punya `${...}`, tapi kebiasaan ini mencegah kesalahan kalau suatu saat
 unit-nya diedit menambahkan variabel.
 
-Aktifkan:
-
-```bash
-systemctl daemon-reload
-systemctl enable --now deploy-monitor
-```
+**Jangan aktifkan unit ini dulu.** `ExecStart` di atas memakai `EnvironmentFile`
+tanpa awalan `-`, jadi systemd **menolak start** kalau file itu belum ada —
+dan `monitor.env` baru dibuat di langkah berikutnya. `ExecStart` juga masih
+bisa berubah tergantung pilihan firewall di langkah 7. Aktivasi
+(`systemctl daemon-reload` + `enable --now`) ada di akhir langkah 7, setelah
+semua prasyaratnya terpenuhi.
 
 ## 5. `monitor.env`
 
@@ -150,7 +150,7 @@ Keterangan tiap variabel (semuanya dibaca oleh `lib/config.ts`):
 | `EXECUTOR` | Tidak (default `local`) | **Produksi selalu `local`** — Deploy Monitor dipasang langsung di VPS1 dan menjalankan `deploy.sh` di sana. `ssh` **hanya untuk pengembangan dari laptop** (`npm run dev`), jangan pernah dipakai produksi — lihat peringatan di bawah tabel. |
 | `SSH_HOST` / `SSH_USER` / `SSH_KEY` | Hanya kalau `EXECUTOR=ssh` (development) | Alamat, user, dan path private key untuk SSH ke VPS1 build host. |
 | `DEPLOY_SH` | Tidak (default `/srv/platform/deploy.sh`) | Path `deploy.sh` di VPS1 (lihat `deploy/DEPLOYMENT.md` §5 Langkah 2 — script ini sudah kamu pasang di sana sebelumnya). |
-| `UPLOADS_DIR` | Tidak (default `/srv/uploads`) | Tempat staging git repo dari zip yang diunggah. Butuh ruang disk yang cukup untuk source project terbesar yang akan kamu deploy. |
+| `UPLOADS_DIR` | Tidak (default `/srv/uploads`) | Tempat hasil ekstraksi zip yang diunggah disimpan sebagai folder biasa (satu folder per project). Butuh ruang disk yang cukup untuk source project terbesar yang akan kamu deploy. |
 | `DB_PATH` | Tidak (default `/srv/monitor/monitor.db`) | File SQLite riwayat deploy milik aplikasi ini sendiri (bukan database aplikasi yang dideploy). |
 | `PUBLIC_HOST` | Tidak | IP atau host VPS2, dipakai untuk merakit URL live yang ditampilkan di UI setelah deploy sukses. |
 | `MAX_ZIP_BYTES` | Tidak (default 200 MB) | Batas ukuran zip yang boleh diunggah, dalam byte — **dan sekaligus batas total ukuran isinya setelah di-extract**, karena angka yang sama dipakai untuk kedua pemeriksaan. Jadi zip 50 MB yang mengembang jadi 300 MB tetap ditolak walau file zip-nya sendiri jauh di bawah batas. |
@@ -230,6 +230,15 @@ Aplikasi ini menjalankan `deploy.sh` **sebagai root** (lihat §5), jadi
 kompromi pada aplikasi ini setara kompromi penuh VPS1. Kalau kamu punya akses
 SSH ke VPS1 (walau tidak ke VPS2), **pilihan (b) lebih aman** — port 3000 sama
 sekali tidak diekspos ke internet.
+
+Sekarang semua prasyarat unit systemd sudah terpenuhi — `monitor.env` (§5)
+ada, `run.sh` di VPS2 sudah diperbarui (§6), dan `ExecStart` sudah final
+sesuai pilihan firewall di atas. Aktifkan:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now deploy-monitor
+```
 
 ## 8. Verifikasi
 

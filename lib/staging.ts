@@ -1,22 +1,15 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, cp, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { promisify } from "node:util";
-import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { join, resolve, sep } from "node:path";
 import { extractZip, type ExtractResult, type ZipLimits } from "./intake";
 import { normalizeProject } from "./project";
 
-const exec = promisify(execFile);
-
-// Identitas disuntik lewat -c supaya VPS1 tidak perlu `git config --global` apa pun.
-const GIT_IDENTITY = [
-  "-c", "user.email=deploy-monitor@localhost",
-  "-c", "user.name=deploy-monitor",
-];
-
-const git = (dir: string, ...args: string[]) =>
-  exec("git", ["-C", dir, ...GIT_IDENTITY, ...args], { maxBuffer: 32 * 1024 * 1024 });
+// Diawali huruf besar dengan sengaja: normalizeProject() SELALU me-lowercase
+// sebelum memfilter karakter (lib/project.ts), jadi tidak ada nama project
+// yang bisa menghasilkan string ini — direktori staging sementara tidak akan
+// pernah bentrok dengan direktori project manapun.
+const STAGING_PREFIX = ".Staging-";
 
 export interface PrepareOpts {
   project: string;
@@ -51,82 +44,41 @@ export async function prepareStaging(
     );
   }
 
-  // Extract ke temp DULU. Zip yang ditolak tidak boleh menyentuh staging repo
-  // yang sudah berisi upload sebelumnya yang baik-baik saja.
-  const staged = await mkdtemp(join(tmpdir(), "dm-extract-"));
+  // Staging dibuat DI DALAM uploadsDir (bukan os.tmpdir()) supaya berada di
+  // filesystem yang SAMA — rename() di bawah cuma atomic kalau sumber dan
+  // tujuan satu filesystem; lintas filesystem rename gagal (EXDEV).
+  await mkdir(opts.uploadsDir, { recursive: true });
+  const staged = await mkdtemp(join(opts.uploadsDir, STAGING_PREFIX));
+
   let extract: ExtractResult;
-  // Dari titik initRepo() berhasil, `dir` adalah repo git nyata yang mungkin
-  // sudah punya riwayat dari upload sebelumnya yang baik. Kalau langkah
-  // sesudahnya gagal (mengosongkan working tree, cp, git add, atau git
-  // commit — mis. ditolak pre-commit hook, atau ENOSPC), working tree/index
-  // repo itu bisa tertinggal dalam keadaan tidak konsisten dengan commit
-  // terakhirnya. dirTouched menandai kapan pemulihan itu perlu dicoba.
-  let dirTouched = false;
   try {
+    // Validasi + tulis semuanya ke `staged` dulu. Zip yang ditolak tidak
+    // boleh menyentuh upload sebelumnya yang baik-baik saja di `dir`.
     extract = await extractZip(opts.zip, staged, opts.limits);
 
-    await mkdir(dir, { recursive: true });
-    await initRepo(dir);
-    dirTouched = true;
-
-    // Kosongkan isi kerja, sisakan .git — git yang mencatat penghapusannya.
-    for (const name of await readdir(dir)) {
-      if (name === ".git") continue;
-      await rm(join(dir, name), { recursive: true, force: true });
+    // Tukar isi `dir` lewat DUA rename atomic, bukan hapus-lalu-salin: di
+    // setiap titik yang bisa diamati, `dir` selalu berisi upload lama UTUH
+    // atau upload baru UTUH — tidak pernah setengah-terhapus atau
+    // setengah-tertulis. Beda dari desain lama (staging git repo): sekarang
+    // `dir` adalah working copy yang langsung dibaca deploy.sh, jadi
+    // ketidakkonsistenan working tree tidak lagi "tidak masalah karena cuma
+    // commit yang dibaca" — harus benar-benar atomic.
+    //
+    // Satu-satunya jendela yang tidak atomic: proses mati PERSIS di antara
+    // kedua rename di bawah. Akibatnya `dir` sesaat tidak ada sama sekali —
+    // bukan korupsi (isi lama ATAU baru, tidak pernah campuran) — dan upload
+    // berikutnya membuatnya lagi dari nol seperti biasa.
+    const orphan = `${dir}.orphan-${randomUUID()}`;
+    if (existsSync(dir)) {
+      await rename(dir, orphan);
     }
-    await cp(staged, dir, { recursive: true });
-
-    await git(dir, "add", "-A");
-    // --allow-empty WAJIB: tanpa ini, mengunggah zip yang sama persis membuat
-    // `git commit` exit 1 dan deploy gagal sebelum sempat mulai.
-    await git(dir, "commit", "--allow-empty", "-m", `upload ${new Date().toISOString()}`);
-  } catch (err) {
-    if (dirTouched) {
-      // Jangan sampai kegagalan pemulihan menutupi error ASLI yang memicu
-      // catch ini — err asli tetap yang dilempar ke pemanggil apa pun yang
-      // terjadi di sini.
-      await restoreWorkingTree(dir).catch(() => {});
-    }
-    throw err;
+    await rename(staged, dir);
+    await rm(orphan, { recursive: true, force: true }).catch(() => {});
   } finally {
-    await rm(staged, { recursive: true, force: true });
+    // Kalau rename di atas sudah berhasil, `staged` sudah pindah ke `dir`
+    // dan path ini tidak ada lagi — rm dengan force:true diam-diam no-op.
+    await rm(staged, { recursive: true, force: true }).catch(() => {});
   }
 
   return { dir, extract };
-}
-
-/**
- * Kembalikan working tree & index `dir` ke persis commit terakhirnya.
- * deploy.sh mengonsumsi staging repo lewat `git clone` (deploy/deploy.sh:104)
- * — yaitu riwayat yang SUDAH di-commit, bukan working tree — jadi working
- * tree yang kotor tidak pernah membuat deploy manapun (lalu atau nanti)
- * memakai isi yang salah. Fungsi ini membuat jaminan itu nyata, bukan cuma
- * "kebetulan tidak masalah": diverifikasi empiris bahwa `git reset --hard`
- * + `git clean -fd` memulihkan working tree SEPENUHNYA dari riwayat —
- * file yang terhapus kembali, file yang berubah kembali ke isi ter-commit.
- */
-async function restoreWorkingTree(dir: string): Promise<void> {
-  try {
-    await git(dir, "rev-parse", "--verify", "HEAD");
-  } catch {
-    // Repo baru saja di-init dan belum pernah punya commit sama sekali —
-    // HEAD belum lahir, tidak ada riwayat untuk dipulihkan. `git reset
-    // --hard HEAD` pada repo begini gagal (unknown revision), jadi jangan
-    // dicoba.
-    return;
-  }
-  await git(dir, "reset", "--hard", "HEAD");
-  await git(dir, "clean", "-fd");
-}
-
-async function initRepo(dir: string): Promise<void> {
-  // Cek keberadaan .git SECARA LANGSUNG, jangan pakai `rev-parse --git-dir`:
-  // rev-parse BERHASIL kalau direktori induk mana pun kebetulan sebuah repo,
-  // sehingga kita akan melewati init lalu `git add -A` dan `commit` beroperasi
-  // pada repo induk itu — meng-commit isi upload ke repo yang sama sekali salah.
-  if (existsSync(join(dir, ".git"))) return;
-
-  // -b main memastikan HEAD -> refs/heads/main, yang jadi origin/HEAD setelah
-  // deploy.sh meng-clone-nya — itulah yang dibaca deploy.sh:109.
-  await exec("git", ["init", "-b", "main", dir]);
 }

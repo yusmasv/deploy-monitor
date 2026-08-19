@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, access, writeFile, chmod } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, readFile, access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename, resolve, sep } from "node:path";
 import { prepareStaging } from "../lib/staging";
@@ -8,23 +7,28 @@ import { makeZip } from "./helpers/zip";
 
 const LIMITS = { maxTotalBytes: 1e6, maxEntries: 100 };
 let uploads: string;
-const git = (dir: string, ...args: string[]) =>
-  execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
 
 beforeEach(async () => { uploads = await mkdtemp(join(tmpdir(), "uploads-")); });
 afterEach(async () => { await rm(uploads, { recursive: true, force: true }); });
 
+// Tidak boleh ada sisa direktori staging (.Staging-*) atau backup (.orphan-*)
+// tertinggal di uploadsDir setelah prepareStaging selesai — keduanya cuma
+// boleh ada SEMENTARA selama swap berlangsung.
+async function leftovers(): Promise<string[]> {
+  return (await readdir(uploads)).filter((n) => n.startsWith(".Staging-") || n.includes(".orphan-"));
+}
+
 describe("prepareStaging", () => {
-  it("membuat repo yang basename-nya sama persis dengan nama project", async () => {
+  it("membuat direktori yang basename-nya sama persis dengan nama project, tanpa sisa staging", async () => {
     const zip = makeZip([{ name: "Dockerfile", data: Buffer.from("FROM node") }]);
     const { dir } = await prepareStaging({ project: "kanban-clone", zip, uploadsDir: uploads, limits: LIMITS });
 
     expect(basename(dir)).toBe("kanban-clone");   // deploy.sh mengambil basename ini
-    expect(git(dir, "symbolic-ref", "HEAD")).toBe("refs/heads/main");
-    expect(git(dir, "log", "--oneline")).toContain("upload");
+    expect(await readFile(join(dir, "Dockerfile"), "utf8")).toBe("FROM node");
+    expect(await leftovers()).toEqual([]);
   });
 
-  it("upload kedua jadi commit kedua, dan penghapusan file ikut terpropagasi", async () => {
+  it("upload kedua menimpa isi lama: file yang hilang di zip baru ikut terhapus", async () => {
     const p = { project: "app", uploadsDir: uploads, limits: LIMITS };
     await prepareStaging({ ...p, zip: makeZip([
       { name: "a.txt", data: Buffer.from("v1") },
@@ -36,19 +40,19 @@ describe("prepareStaging", () => {
 
     expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("v2");
     await expect(access(join(dir, "hapus-aku.txt"))).rejects.toThrow();
-    expect(git(dir, "log", "--oneline").split("\n")).toHaveLength(2);
+    expect(await leftovers()).toEqual([]);
   });
 
-  it("zip identik tetap menghasilkan commit baru — --allow-empty", async () => {
+  it("upload berulang dengan isi identik tetap berhasil, tanpa sisa staging", async () => {
     const p = { project: "app", uploadsDir: uploads, limits: LIMITS };
     const zip = () => makeZip([{ name: "a.txt", data: Buffer.from("sama") }]);
 
     const a = await prepareStaging({ ...p, zip: zip() });
-    const sha1 = git(a.dir, "rev-parse", "HEAD");
     const b = await prepareStaging({ ...p, zip: zip() });
-    const sha2 = git(b.dir, "rev-parse", "HEAD");
 
-    expect(sha2).not.toBe(sha1);   // tag image baru, tidak tertukar dengan yang lama
+    expect(await readFile(join(b.dir, "a.txt"), "utf8")).toBe("sama");
+    expect(a.dir).toBe(b.dir);
+    expect(await leftovers()).toEqual([]);
   });
 
   it("zip yang ditolak tidak merusak upload yang sudah baik", async () => {
@@ -59,7 +63,8 @@ describe("prepareStaging", () => {
       .rejects.toThrow();
 
     expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("baik");
-    expect(git(dir, "log", "--oneline").split("\n")).toHaveLength(1);
+    expect(await readdir(dir)).toEqual(["a.txt"]);
+    expect(await leftovers()).toEqual([]);
   });
 });
 
@@ -102,32 +107,4 @@ describe("prepareStaging - nama project tidak boleh keluar dari uploadsDir", () 
       expect(resolvedDir.startsWith(root + sep)).toBe(true);
     },
   );
-});
-
-describe("prepareStaging - pemulihan setelah gagal pasca dir tersentuh", () => {
-  it("working tree dipulihkan ke commit terakhir kalau git commit ditolak pre-commit hook", async () => {
-    const p = { project: "app", uploadsDir: uploads, limits: LIMITS };
-    const { dir } = await prepareStaging({
-      ...p,
-      zip: makeZip([{ name: "a.txt", data: Buffer.from("lama") }]),
-    });
-
-    // Hook nyata, dijalankan oleh git betulan — bukan mock. Selalu menolak
-    // commit, mensimulasikan kegagalan apa pun yang terjadi setelah working
-    // tree sudah diganti tapi sebelum commit selesai (mis. ENOSPC).
-    const hookPath = join(dir, ".git", "hooks", "pre-commit");
-    await writeFile(hookPath, "#!/bin/sh\nexit 1\n");
-    await chmod(hookPath, 0o755);
-
-    await expect(
-      prepareStaging({ ...p, zip: makeZip([{ name: "a.txt", data: Buffer.from("baru") }]) }),
-    ).rejects.toThrow();
-
-    // Tanpa pemulihan, working tree akan menunjukkan "baru" (sudah di-cp)
-    // walau HEAD masih di commit lama — index & working tree konsisten
-    // dengan commit terakhir, bukan tertinggal setengah jalan.
-    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("lama");
-    expect(git(dir, "status", "--porcelain")).toBe("");
-    expect(git(dir, "log", "--oneline").split("\n")).toHaveLength(1);
-  });
 });

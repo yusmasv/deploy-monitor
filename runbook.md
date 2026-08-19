@@ -81,7 +81,7 @@ Deploy melewati fase-fase berikut secara berurutan:
 
 | Fase | Artinya |
 |---|---|
-| Sumber | `deploy.sh` mengambil source dari staging repo hasil ekstraksi zip |
+| Sumber | `deploy.sh` memakai folder hasil ekstraksi zip langsung sebagai source |
 | Konfigurasi | Mendeteksi stack, port, perintah migrasi, dsb., lalu menerapkan override dari `deploy.env`/env yang kamu isi |
 | Build | `docker build` — **paling sering gagal**: `Dockerfile not found`, error build stack-mu, atau `USER` bukan angka |
 | Push | Image di-push ke registry VPS1 |

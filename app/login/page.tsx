@@ -27,7 +27,7 @@ export default function LoginPage() {
     // padahal masalahnya lain. `.catch` menjaga body non-JSON (halaman error
     // proxy) tidak melempar di sini.
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
-    setError(data?.error ?? "Token salah.");
+    setError(data?.error ?? "Wrong token.");
   }
 
   return (
@@ -35,7 +35,7 @@ export default function LoginPage() {
       <form onSubmit={submit} className="w-full max-w-sm space-y-4">
         <div>
           <h1 className="text-lg font-semibold">Deploy Monitor</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">Masukkan token akses.</p>
+          <p className="mt-1 text-sm text-[var(--muted)]">Enter your access token.</p>
         </div>
         <input
           type="password"
@@ -50,7 +50,7 @@ export default function LoginPage() {
           disabled={busy || !token}
           className="w-full rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
         >
-          {busy ? "Memeriksa…" : "Masuk"}
+          {busy ? "Checking…" : "Log in"}
         </button>
       </form>
     </main>

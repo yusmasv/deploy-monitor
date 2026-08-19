@@ -275,6 +275,9 @@ rm -rf /srv/builds/kanban-clone
 #
 #   ./deploy.sh <repo-url> [branch]     first time (or any time)
 #   ./deploy.sh <project>  [branch]     re-deploy something already cloned
+#   ./deploy.sh </path/to/folder>       already-prepared source (e.g. Deploy
+#                                       Monitor's extracted zip upload) — used
+#                                       as-is, no git involved
 #
 # There is NO per-project file to create on this host: everything app-specific
 # comes from deploy.env inside the repo itself.
@@ -327,7 +330,19 @@ case "${TARGET}" in
   *)               REPO_URL="" ;;
 esac
 
-if [ -n "${REPO_URL}" ]; then
+# A local path that exists as a plain directory (no .git inside) is used
+# as-is, not cloned. This is how Deploy Monitor hands off an extracted zip
+# upload. A local path that IS a git repo (e.g. a bare repo used as a clone
+# source) keeps the existing clone-based flow below untouched.
+LOCAL_SRC=""
+if [ -n "${REPO_URL}" ] && [ -d "${REPO_URL}" ] && [ ! -e "${REPO_URL}/.git" ]; then
+  LOCAL_SRC="${REPO_URL}"
+  REPO_URL=""
+fi
+
+if [ -n "${LOCAL_SRC}" ]; then
+  PROJECT="$(basename "${LOCAL_SRC}")"
+elif [ -n "${REPO_URL}" ]; then
   # Derive the project name from the repo: git@host:org/my-app.git -> my-app
   PROJECT="$(basename "${REPO_URL}")"
   PROJECT="${PROJECT%.git}"
@@ -344,21 +359,26 @@ PROJECT="${PROJECT%-}"
 SRC="${BUILDS_DIR}/${PROJECT}"
 
 # Re-deploy by name only works once the repo is already on this host.
-if [ -z "${REPO_URL}" ] && [ ! -d "${SRC}/.git" ]; then
+if [ -z "${LOCAL_SRC}" ] && [ -z "${REPO_URL}" ] && [ ! -d "${SRC}/.git" ]; then
   die "Unknown project '${PROJECT}'. Pass the repository URL the first time:
   deploy.sh git@github.com:org/${PROJECT}.git [branch]"
 fi
 
+[ -n "${LOCAL_SRC}" ] && BRANCH="n/a"
+
 echo ""
 echo -e "${BLUE}Deploying ${PROJECT}${RESET}"
-echo "Branch: ${BRANCH:-<repository default>}"
+[ -n "${LOCAL_SRC}" ] || echo "Branch: ${BRANCH:-<repository default>}"
 echo ""
 
 # ------------------------------------------------------------------
 # 2. Source code
 # ------------------------------------------------------------------
 
-if [ -d "${SRC}/.git" ]; then
+if [ -n "${LOCAL_SRC}" ]; then
+  info "Using uploaded source..."
+  SRC="${LOCAL_SRC}"
+elif [ -d "${SRC}/.git" ]; then
   info "Updating existing repository..."
 
   # Re-pointing an existing checkout at a new URL must not fail the deploy.
@@ -373,25 +393,34 @@ else
   git clone "${REPO_URL}" "${SRC}"
 fi
 
-# No branch given: follow whatever the repository itself calls default.
-if [ -z "${BRANCH}" ]; then
-  BRANCH="$(git -C "${SRC}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  BRANCH="${BRANCH#origin/}"
-  [ -n "${BRANCH}" ] || BRANCH="$(git -C "${SRC}" rev-parse --abbrev-ref HEAD)"
+if [ -z "${LOCAL_SRC}" ]; then
+  # No branch given: follow whatever the repository itself calls default.
+  if [ -z "${BRANCH}" ]; then
+    BRANCH="$(git -C "${SRC}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    BRANCH="${BRANCH#origin/}"
+    [ -n "${BRANCH}" ] || BRANCH="$(git -C "${SRC}" rev-parse --abbrev-ref HEAD)"
+  fi
+
+  git -C "${SRC}" show-ref --verify --quiet "refs/remotes/origin/${BRANCH}" \
+    || die "Branch '${BRANCH}' does not exist on origin"
+
+  git -C "${SRC}" checkout -B "${BRANCH}" "origin/${BRANCH}" --quiet
+  git -C "${SRC}" reset --hard "origin/${BRANCH}" --quiet
+  git -C "${SRC}" clean -fdq
 fi
-
-git -C "${SRC}" show-ref --verify --quiet "refs/remotes/origin/${BRANCH}" \
-  || die "Branch '${BRANCH}' does not exist on origin"
-
-git -C "${SRC}" checkout -B "${BRANCH}" "origin/${BRANCH}" --quiet
-git -C "${SRC}" reset --hard "origin/${BRANCH}" --quiet
-git -C "${SRC}" clean -fdq
 
 success "Source ready (${BRANCH})."
 
 cd "${SRC}"
 
-SHA="$(git rev-parse --short HEAD)"
+# Local uploads have no git history to derive an identifier from — a UTC
+# timestamp fills the same role (unique per deploy, sortable, valid as a
+# Docker tag). Real git sources keep using the actual commit SHA.
+if [ -n "${LOCAL_SRC}" ]; then
+  SHA="$(date -u +%Y%m%d-%H%M%S)"
+else
+  SHA="$(git rev-parse --short HEAD)"
+fi
 echo ""
 info "Commit: ${SHA}"
 
@@ -661,6 +690,16 @@ ssh "${SSH_OPTS[@]}" "${RUNTIME_USER}@${RUNTIME_HOST}" "mkdir -p '${RUNTIME_APPS
 scp "${SSH_OPTS[@]}" "${RESOLVED_CONF}" "${RUNTIME_USER}@${RUNTIME_HOST}:${RUNTIME_APPS_DIR}/${PROJECT}/deploy.env"
 
 success "Config shipped."
+
+# Opsional: env override dari deploy-monitor. Tanpa ENV_OVERRIDES_FILE, blok ini
+# tidak melakukan apa pun dan deploy.sh berperilaku persis seperti sebelumnya —
+# pemakaian manual dari console tidak terpengaruh.
+if [ -n "${ENV_OVERRIDES_FILE:-}" ] && [ -s "${ENV_OVERRIDES_FILE}" ]; then
+  action "Shipping env overrides..."
+  scp "${SSH_OPTS[@]}" "${ENV_OVERRIDES_FILE}" \
+    "${RUNTIME_USER}@${RUNTIME_HOST}:${RUNTIME_APPS_DIR}/${PROJECT}/app.env.override"
+  success "Env overrides shipped."
+fi
 
 echo ""
 action "Triggering runtime deployment..."

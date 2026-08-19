@@ -42,12 +42,12 @@ export function DeploySummary({ d }: { d: DeployDetail }) {
 
       <dl className="space-y-1 text-xs">
         {([
-          ["Berkas", d.zip_name],
+          ["File", d.zip_name],
           ["Commit", d.sha],
           ["Image", d.image],
           ["Exit code", d.exit_code === null ? null : String(d.exit_code)],
           // Hanya NAMA key — nilainya memang tidak pernah disimpan (spec D7).
-          ["Env di-override", envKeys.length ? envKeys.join(", ") : null],
+          ["Overridden env", envKeys.length ? envKeys.join(", ") : null],
         ] as [string, string | null][])
           .filter(([, v]) => v)
           .map(([k, v]) => (
@@ -62,7 +62,7 @@ export function DeploySummary({ d }: { d: DeployDetail }) {
         href={`/api/deploys/${d.id}/logs?plain=1`}
         className="inline-block text-xs text-[var(--muted)] underline hover:text-[var(--text)]"
       >
-        Unduh log
+        Download log
       </a>
     </div>
   );

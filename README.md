@@ -2,9 +2,9 @@
 
 Aplikasi web untuk mendeploy aplikasi lain lewat unggahan zip, tanpa perlu
 akses SSH ke server. Operator mengunggah zip berisi `Dockerfile`, aplikasi
-ini mengekstraknya ke staging git repo per-project di build host (VPS1),
-menjalankan `deploy.sh` yang sudah ada di sana, dan menyiarkan log build
-secara langsung ke browser lewat SSE. Riwayat deploy disimpan di SQLite.
+ini mengekstraknya ke folder per-project di build host (VPS1), menjalankan
+`deploy.sh` yang sudah ada di sana, dan menyiarkan log build secara
+langsung ke browser lewat SSE. Riwayat deploy disimpan di SQLite.
 
 Dijalankan **sebagai root** di build host: siapa pun yang memegang
 `MONITOR_TOKEN` bisa menjalankan deploy. Baca `setup.md` §7 sebelum
