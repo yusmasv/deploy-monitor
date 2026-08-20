@@ -42,6 +42,15 @@ describe("detectSummary", () => {
     expect(detectSummary("Port    : 3000")).toEqual({ appPort: 3000 });
   });
 
+  // Regression: run.sh's real line sejak HOST_PORT dipisah dari APP_PORT
+  // adalah "Port    : 3002 (container listens on 3000)" — angka pertama
+  // (HOST_PORT, yang benar-benar reachable dari luar) yang harus terambil,
+  // bukan gagal match sama sekali gara-gara ada teks sesudah angkanya.
+  it("mengambil host port dari baris ringkasan run.sh yang menyertakan container port", () => {
+    expect(detectSummary("Port    : 3002 (container listens on 3000)"))
+      .toEqual({ appPort: 3002 });
+  });
+
   it("mengabaikan baris lain", () => {
     expect(detectSummary("Branch : main")).toBeNull();
     expect(detectSummary("random")).toBeNull();

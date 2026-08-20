@@ -161,6 +161,10 @@ export class Runner {
         Object.assign(summary, detectSummary(plain) ?? {});
       }
 
+      // summary.appPort is parsed from run.sh's "Port : <n> (container
+      // listens on ...)" line, so despite the field name it's already
+      // HOST_PORT — the port actually published on the runtime host, not
+      // the container-internal one. See lib/phases.ts's detectSummary().
       const liveUrl = this.o.publicHost && summary.appPort
         ? `http://${this.o.publicHost}:${summary.appPort}`
         : null;

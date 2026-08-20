@@ -50,7 +50,11 @@ export function detectSummary(plainLine: string): Partial<Summary> | null {
   const image = /^Image\s*:\s*(\S+)$/.exec(s);
   if (image) return { image: image[1] };
 
-  const port = /^Port\s*:\s*(\d+)$/.exec(s);
+  // No trailing $: run.sh's actual line is "Port    : 3002 (container
+  // listens on 3000)" — the leading number is HOST_PORT, the one a browser
+  // can actually reach, which is what appPort has meant since run.sh split
+  // host and container ports. Only the leading digits are captured.
+  const port = /^Port\s*:\s*(\d+)/.exec(s);
   if (port) return { appPort: Number(port[1]) };
 
   return null;
