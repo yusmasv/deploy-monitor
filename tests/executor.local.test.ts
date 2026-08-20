@@ -44,6 +44,23 @@ describe("LocalExecutor", () => {
     expect(got[0].line).toBe("dunia");
   });
 
+  // Regression: spinner/progress bar (mis. `drizzle-kit migrate`) redraw pakai
+  // \r, bukan \n. Sebelum fix, tiap frame numpuk jadi satu baris panjang di
+  // LogViewer alih-alih ditimpa seperti terminal sungguhan menampilkannya.
+  it("menimpa frame spinner yang diakhiri \\r, bukan menumpuknya", async () => {
+    const got = await collect(
+      ex.run("printf", ["frame1\\rframe2\\rframe3\\nbaris-biasa\\n"], {}),
+    );
+    const stdout = got.filter((c) => c.stream === "stdout").map((c) => c.line);
+    expect(stdout).toEqual(["frame3", "baris-biasa"]);
+  });
+
+  it("tidak menyentuh akhir baris CRLF (\\r\\n)", async () => {
+    const got = await collect(ex.run("printf", ["satu\\r\\ndua\\r\\n"], {}));
+    const stdout = got.filter((c) => c.stream === "stdout").map((c) => c.line);
+    expect(stdout).toEqual(["satu\r", "dua\r"]);
+  });
+
   // Regression: badan `for await` milik konsumen yang MELEMPAR (di produksi:
   // db.appendLine gagal, mis. SQLITE_FULL, di dalam Runner.execute) membuat
   // runtime memanggil .return() pada generator ini. Sebelum fix, child

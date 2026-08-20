@@ -22,6 +22,15 @@ export class LocalExecutor implements Executor {
       child[name].setEncoding("utf8");
       child[name].on("data", (chunk: string) => {
         buffers[name] += chunk;
+        // Spinner/progress bar (mis. drizzle-kit migrate) redraw pakai \r
+        // (pindah kursor ke awal baris), bukan \n — itu instruksi terminal,
+        // bukan pemisah baris sungguhan. LogViewer me-render teks polos, jadi
+        // tanpa ini, tiap frame animasi ikut numpuk jadi satu baris panjang
+        // yang tidak terbaca. Buang tiap segmen yang diakhiri \r (yang
+        // TIDAK langsung diikuti \n — itu cuma CRLF, akhir baris biasa):
+        // segmen begitu sudah "ketimpa" oleh yang berikutnya, sama seperti
+        // terminal sungguhan menampilkannya.
+        buffers[name] = buffers[name].replace(/[^\n\r]*\r(?!\n)/g, "");
         const lines = buffers[name].split("\n");
         buffers[name] = lines.pop() ?? "";
         for (const line of lines) push({ stream: name, line });

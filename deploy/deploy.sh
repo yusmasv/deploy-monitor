@@ -213,6 +213,16 @@ detect_config() {
       MIGRATE_CMD="${pm} exec prisma migrate deploy"
     fi
 
+    # Safe to auto-detect (unlike a bare "SEED_CMD always on" default would
+    # be): run.sh only ever invokes SEED_CMD when FIRST_DEPLOY=true, which is
+    # itself gated on the runtime host's own .initialized marker for this
+    # project — a gate this detection has no way to see or influence. So an
+    # established project's later deploys never re-run this, no matter how
+    # SEED_CMD got its value. See run.sh's FIRST_DEPLOY check.
+    if pkg_scripts | grep -q '"seed"[[:space:]]*:'; then
+      SEED_CMD="${run_prefix} seed"
+    fi
+
     if has drizzle || has prisma/migrations || has migrations; then
       DB_EVIDENCE="yes"
     fi
@@ -254,9 +264,6 @@ detect_config() {
     SECRET_VARS="SECRET_KEY_BASE"
     has db/migrate && DB_EVIDENCE="yes"
   fi
-
-  # Seeding is never auto-enabled: a seed script may reset data.
-  SEED_CMD=""
 
   # Any HTTP answer proves the server is listening, which is what a deploy
   # needs to know. Set HEALTH_STRICT=true in deploy.env to demand 2xx/3xx.

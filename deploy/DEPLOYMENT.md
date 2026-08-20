@@ -82,7 +82,7 @@ Ubah perilaku deploy lewat `deploy.env` **di repo**; ubah konfigurasi aplikasi l
 | `MIGRATE_CMD` | script `migrate` di package.json → `drizzle.config.*` → `prisma/` → `manage.py` → `artisan` → `Gemfile` | **error** kalau ada folder migrasi tapi caranya tak ketahuan |
 | `DB_KIND` | dependency (`@libsql/client`/`better-sqlite3` → sqlite; `pg`/`mysql2` → external) | default `none` |
 | `SECRET_VARS` | dependency (`better-auth` → `BETTER_AUTH_SECRET`, Django → `SECRET_KEY`, …) | kosong |
-| `SEED_CMD` | **sengaja tidak pernah dideteksi** — script seed bisa menghapus data | kosong |
+| `SEED_CMD` | script `seed` di package.json (Node) — kosong untuk stack lain | kosong |
 | `PUBLIC_URL_VARS` | dependency (`better-auth` → `BETTER_AUTH_URL`, `next-auth` → `NEXTAUTH_URL`) | kosong |
 | `PUBLIC_URL` | `deploy.env` → `PUBLIC_HOST` di `platform.env` → IP default-route host | peringatan kalau IP tak terdeteksi |
 | `BACKUP_KEEP` | default `1` — backup lama dihapus tiap deploy | — |
@@ -97,7 +97,8 @@ disebutkan di dalamnya — yang tidak disebut tetap memakai hasil deteksi. Jadi 
 **hanya baris yang mau diubah**:
 
 ```bash
-SEED_CMD="pnpm seed"      # aktifkan seed (deteksi sengaja mematikan ini)
+SEED_CMD="pnpm seed"      # override manual — perlu ini kalau stack-mu bukan Node,
+                          # atau script seed-mu tidak bernama "seed" di package.json
 HEALTH_PATH=/health       # endpoint sendiri
 HEALTH_STRICT=true        # wajib balas 2xx/3xx, bukan sekadar hidup
 ```
@@ -482,6 +483,16 @@ detect_config() {
       MIGRATE_CMD="${pm} exec prisma migrate deploy"
     fi
 
+    # Safe to auto-detect (unlike a bare "SEED_CMD always on" default would
+    # be): run.sh only ever invokes SEED_CMD when FIRST_DEPLOY=true, which is
+    # itself gated on the runtime host's own .initialized marker for this
+    # project — a gate this detection has no way to see or influence. So an
+    # established project's later deploys never re-run this, no matter how
+    # SEED_CMD got its value. See run.sh's FIRST_DEPLOY check.
+    if pkg_scripts | grep -q '"seed"[[:space:]]*:'; then
+      SEED_CMD="${run_prefix} seed"
+    fi
+
     if has drizzle || has prisma/migrations || has migrations; then
       DB_EVIDENCE="yes"
     fi
@@ -523,9 +534,6 @@ detect_config() {
     SECRET_VARS="SECRET_KEY_BASE"
     has db/migrate && DB_EVIDENCE="yes"
   fi
-
-  # Seeding is never auto-enabled: a seed script may reset data.
-  SEED_CMD=""
 
   # Any HTTP answer proves the server is listening, which is what a deploy
   # needs to know. Set HEALTH_STRICT=true in deploy.env to demand 2xx/3xx.

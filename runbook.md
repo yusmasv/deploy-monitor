@@ -17,7 +17,7 @@ Sebelum meng-zip project-mu, pastikan:
       `my-app-main/`). Folder pembungkus tunggal itu **dilepas otomatis**;
       kalau ada lebih dari satu item di root, tidak dilepas.
 - [ ] `USER` di Dockerfile **numerik**, mis. `USER 1001:1001` — nama user
-      (`USER app`) ditolak oleh `deploy.sh` (`deploy/deploy.sh:298`).
+      (`USER app`) ditolak oleh `deploy.sh` (`deploy/deploy.sh:334`).
 - [ ] `EXPOSE <port>` ada di Dockerfile.
 - [ ] **devDependencies ikut** di image (`drizzle-kit`, `tsx`, dsb.) — jangan
       build dengan `--prod` atau setara. Migrasi dijalankan di dalam image
@@ -28,6 +28,10 @@ Sebelum meng-zip project-mu, pastikan:
 - [ ] `deploy.env` **opsional**. Berbeda dari `DEPLOYMENT.md` versi lama:
       lewat Deploy Monitor, `deploy.env` **tidak perlu di-commit ke git** —
       cukup ikut di dalam zip yang kamu unggah.
+- [ ] **Punya script `"seed"` di `package.json`?** Itu akan **otomatis
+      dijalankan pada deploy pertama** project ini (tidak pernah pada deploy
+      berikutnya — aman untuk data yang sudah ada). Kalau tidak mau ini
+      terjadi otomatis, matikan lewat `deploy.env`: `SEED_CMD=""`.
 
 ## 2. Perbedaan penting dari alur git lama
 

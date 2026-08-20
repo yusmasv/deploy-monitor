@@ -39,6 +39,10 @@ export class SshExecutor implements Executor {
     const buffers = { stdout: "", stderr: "" };
     const feed = (name: "stdout" | "stderr", chunk: string) => {
       buffers[name] += chunk;
+      // Sama seperti local.ts: buang frame spinner yang diakhiri \r (bukan
+      // CRLF) sebelum dipecah jadi baris, biar animasi progress (drizzle-kit
+      // migrate dkk.) tidak numpuk jadi satu baris panjang di LogViewer.
+      buffers[name] = buffers[name].replace(/[^\n\r]*\r(?!\n)/g, "");
       const lines = buffers[name].split("\n");
       buffers[name] = lines.pop() ?? "";
       for (const l of lines) push({ stream: name, line: l });
