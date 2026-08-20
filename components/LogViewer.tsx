@@ -90,7 +90,12 @@ export function LogViewer({ initial }: { initial: DeployDetail }) {
                 <span
                   key={i}
                   style={{
-                    color: sp.color ? COLOR[sp.color] : l.stream === "stderr" ? "var(--log-red)" : undefined,
+                    // Banyak tool CLI (mis. `docker build`) menulis progress normal ke
+                    // stderr — itu bukan tanda error. Merah HANYA untuk baris yang
+                    // memang punya kode warna ANSI merah eksplisit dari script (mis.
+                    // fungsi error() di deploy.sh). Baris stderr lain jatuh ke abu-abu
+                    // netral, bukan otomatis merah.
+                    color: sp.color ? COLOR[sp.color] : l.stream === "stderr" ? "var(--muted)" : undefined,
                     fontWeight: sp.bold ? 600 : undefined,
                   }}
                 >

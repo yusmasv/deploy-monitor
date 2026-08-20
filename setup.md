@@ -13,12 +13,14 @@ secara detail, operasi harian di VPS2, rollback, restore database — lihat
 
 | Host | Apa yang berubah |
 |---|---|
-| VPS1 (build host) | Pasang aplikasi Deploy Monitor ini + Node.js 24 |
+| VPS1 (build host) | Pasang aplikasi Deploy Monitor ini + Node.js 24, **dan** ganti `deploy.sh` dengan versi baru (mendukung upload zip tanpa git) |
 | VPS2 (runtime host) | Ganti `run.sh` dengan versi baru (mendukung env override per-key) |
 | Aplikasi (Deploy Monitor) | Isi `monitor.env` — token, path, dan (opsional) kredensial SSH ke VPS2 |
 
 VPS2 **tidak perlu perubahan lain** selain `run.sh`. `app.sh`, `app-stack.yml`,
 dan seluruh isi `/srv/apps`, `/srv/data`, `/srv/backups` tetap seperti biasa.
+Di VPS1, cuma `deploy.sh` yang berubah — tidak ada file lain di `/srv/platform`
+yang perlu disentuh.
 
 ## 2. Prasyarat VPS1
 
@@ -78,7 +80,11 @@ git -C /srv/monitor/app remote set-url origin https://github.com/<org>/deploy-mo
 
 Untuk pembaruan aplikasi berikutnya, cukup ulangi `git pull`, `npm install`,
 `npm run build`, lalu `systemctl restart deploy-monitor` (unit systemd-nya
-dipasang di langkah berikutnya).
+dipasang di langkah berikutnya). `git pull` ini **tidak** menyentuh
+`/srv/platform/deploy.sh` maupun `/srv/platform/run.sh` — keduanya file
+terpisah, bukan bagian dari repo ini. Kalau pembaruan yang kamu tarik
+mengubah `deploy/deploy.sh` atau `deploy/run.sh`, ulangi langkah 6 dan/atau
+7 secara manual juga.
 
 ## 4. Systemd unit
 
@@ -113,8 +119,8 @@ unit-nya diedit menambahkan variabel.
 **Jangan aktifkan unit ini dulu.** `ExecStart` di atas memakai `EnvironmentFile`
 tanpa awalan `-`, jadi systemd **menolak start** kalau file itu belum ada —
 dan `monitor.env` baru dibuat di langkah berikutnya. `ExecStart` juga masih
-bisa berubah tergantung pilihan firewall di langkah 7. Aktivasi
-(`systemctl daemon-reload` + `enable --now`) ada di akhir langkah 7, setelah
+bisa berubah tergantung pilihan firewall di langkah 8. Aktivasi
+(`systemctl daemon-reload` + `enable --now`) ada di akhir langkah 8, setelah
 semua prasyaratnya terpenuhi.
 
 ## 5. `monitor.env`
@@ -149,7 +155,7 @@ Keterangan tiap variabel (semuanya dibaca oleh `lib/config.ts`):
 | `MONITOR_TOKEN` | **Wajib** | Aplikasi gagal start kalau kosong **atau kurang dari 24 karakter** — ini juga token login UI (dipakai sebagai cookie), karena aplikasi menjalankan `deploy.sh` sebagai root. `openssl rand -hex 32` di atas menghasilkan 64 karakter, jadi jauh di atas batas. |
 | `EXECUTOR` | Tidak (default `local`) | **Produksi selalu `local`** — Deploy Monitor dipasang langsung di VPS1 dan menjalankan `deploy.sh` di sana. `ssh` **hanya untuk pengembangan dari laptop** (`npm run dev`), jangan pernah dipakai produksi — lihat peringatan di bawah tabel. |
 | `SSH_HOST` / `SSH_USER` / `SSH_KEY` | Hanya kalau `EXECUTOR=ssh` (development) | Alamat, user, dan path private key untuk SSH ke VPS1 build host. |
-| `DEPLOY_SH` | Tidak (default `/srv/platform/deploy.sh`) | Path `deploy.sh` di VPS1 (lihat `deploy/DEPLOYMENT.md` §5 Langkah 2 — script ini sudah kamu pasang di sana sebelumnya). |
+| `DEPLOY_SH` | Tidak (default `/srv/platform/deploy.sh`) | Path `deploy.sh` di VPS1 — **harus versi terbaru dari repo ini**, lihat langkah 6. Versi lama (tanpa dukungan folder biasa) membuat SEMUA deploy lewat UI gagal di fase "Cloning repository...". |
 | `UPLOADS_DIR` | Tidak (default `/srv/uploads`) | Tempat hasil ekstraksi zip yang diunggah disimpan sebagai folder biasa (satu folder per project). Butuh ruang disk yang cukup untuk source project terbesar yang akan kamu deploy. |
 | `DB_PATH` | Tidak (default `/srv/monitor/monitor.db`) | File SQLite riwayat deploy milik aplikasi ini sendiri (bukan database aplikasi yang dideploy). |
 | `PUBLIC_HOST` | Tidak | IP atau host VPS2, dipakai untuk merakit URL live yang ditampilkan di UI setelah deploy sukses. |
@@ -171,7 +177,41 @@ Buat juga direktori `UPLOADS_DIR`-nya kalau belum ada:
 mkdir -p /srv/uploads
 ```
 
-## 6. Memperbarui `run.sh` di VPS2
+## 6. Memperbarui `deploy.sh` di VPS1
+
+`deploy.sh` di VPS1 adalah script yang sudah ada **sebelum** Deploy Monitor
+dipasang — dia bukan bagian dari `git clone` di langkah 3, jadi tidak
+otomatis ter-update. Sejak Deploy Monitor mengunggah project sebagai folder
+biasa (bukan staging git repo), `deploy.sh` butuh satu penambahan: mode baru
+yang menerima folder langsung tanpa `git clone`. **Tanpa langkah ini, semua
+deploy lewat UI akan gagal** di fase "Cloning repository..." atau "Updating
+existing repository..." dengan pesan `does not appear to be a git
+repository` — alur git manual (`deploy.sh <repo-url>` langsung dari CLI)
+tetap jalan seperti biasa, jadi kegagalan ini cuma kelihatan lewat UI Deploy
+Monitor.
+
+Sama seperti `run.sh` di langkah 7, tempelkan langsung lewat web console
+VPS1 (path defaultnya `/srv/platform/deploy.sh` — sesuaikan kalau
+`DEPLOY_SH` di `monitor.env` kamu isi beda):
+
+```bash
+cat > /srv/platform/deploy.sh <<'EOF'
+# ... tempel seluruh isi deploy/deploy.sh versi terbaru dari repo ini di sini ...
+EOF
+chmod +x /srv/platform/deploy.sh
+```
+
+**Kutip tunggal pada `'EOF'` wajib** — alasan yang sama seperti `run.sh` di
+langkah 7: tanpa itu, `${...}` di dalam script ikut di-ekspansi shell saat
+ini (yang nilainya kosong), dan hasil yang tersimpan rusak.
+
+Verifikasi:
+
+```bash
+bash -n /srv/platform/deploy.sh
+```
+
+## 7. Memperbarui `run.sh` di VPS2
 
 Deploy Monitor mengirim override env per-key lewat `app.env.override`, yang
 dibaca `run.sh` versi baru (lihat `deploy/DEPLOYMENT.md` untuk isi lengkap
@@ -196,7 +236,7 @@ Verifikasi setelah menempel:
 bash -n /srv/platform/run.sh   # cek sintaks, tanpa menjalankannya
 ```
 
-## 7. Firewall
+## 8. Firewall
 
 Dua pilihan untuk port 3000 (port UI Deploy Monitor) di VPS1:
 
@@ -232,7 +272,8 @@ SSH ke VPS1 (walau tidak ke VPS2), **pilihan (b) lebih aman** — port 3000 sama
 sekali tidak diekspos ke internet.
 
 Sekarang semua prasyarat unit systemd sudah terpenuhi — `monitor.env` (§5)
-ada, `run.sh` di VPS2 sudah diperbarui (§6), dan `ExecStart` sudah final
+ada, `deploy.sh` di VPS1 (§6) dan `run.sh` di VPS2 (§7) sudah diperbarui,
+dan `ExecStart` sudah final
 sesuai pilihan firewall di atas. Aktifkan:
 
 ```bash
@@ -240,7 +281,7 @@ systemctl daemon-reload
 systemctl enable --now deploy-monitor
 ```
 
-## 8. Verifikasi
+## 9. Verifikasi
 
 ```bash
 systemctl status deploy-monitor
@@ -257,7 +298,7 @@ env override, termasuk bahwa file berisi secret selalu terhapus walau proses
 gagal di tengah), dan `npm run test:smoke` (menjalankan server sungguhan
 dengan `deploy.sh` palsu, tanpa butuh docker maupun VPS2).
 
-## 9. Catatan RAM
+## 10. Catatan RAM
 
 `docker build` (dipicu `deploy.sh` untuk tiap deploy) bisa memakan RAM besar
 tanpa bergantung sama sekali pada aplikasi Deploy Monitor ini — ini sifat

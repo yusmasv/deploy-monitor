@@ -2,7 +2,7 @@
 
 Checklist perintah, tanpa penjelasan. Penjelasan tiap langkah ada di `setup.md`.
 Ikuti berurutan dari atas ke bawah — jangan lompat, terutama urutan
-langkah 8–9 (systemd baru diaktifkan setelah `monitor.env` dan pilihan
+langkah 9–10 (systemd baru diaktifkan setelah `monitor.env` dan pilihan
 firewall selesai).
 
 Ganti setiap `<...>` dengan nilai sungguhan sebelum menjalankan perintahnya.
@@ -85,7 +85,7 @@ WantedBy=multi-user.target
 EOF
 ```
 
-**Jangan jalankan `systemctl enable`/`start` sekarang.** Aktivasi ada di langkah 8.
+**Jangan jalankan `systemctl enable`/`start` sekarang.** Aktivasi ada di langkah 9.
 
 ---
 
@@ -133,7 +133,37 @@ mkdir -p /srv/uploads
 
 ---
 
-## VPS2 — 7. Perbarui `run.sh`
+## VPS1 — 7. Perbarui `deploy.sh`
+
+**Dimana:** VPS1, sebagai root, lewat web console. `deploy.sh` di VPS1 sudah
+ada SEBELUM Deploy Monitor dipasang dan TIDAK ikut ter-update oleh
+`git clone` di langkah 2 — kalau langkah ini dilewati, semua deploy lewat
+UI gagal di fase "Cloning repository..." dengan pesan
+`does not appear to be a git repository`.
+
+1. Buka `deploy/deploy.sh` dari repo ini, salin **seluruh isinya**.
+2. Di VPS1, jalankan:
+
+```bash
+cat > /srv/platform/deploy.sh <<'EOF'
+<TEMPEL_SELURUH_ISI_deploy/deploy.sh_DI_SINI>
+EOF
+chmod +x /srv/platform/deploy.sh
+```
+
+**Kutip tunggal pada `'EOF'` wajib** — jangan dihapus. Ganti `<TEMPEL_SELURUH_ISI_deploy/deploy.sh_DI_SINI>` dengan isi file yang disalin di langkah 1, bukan teks placeholder itu sendiri.
+
+3. Verifikasi sintaks:
+
+```bash
+bash -n /srv/platform/deploy.sh
+```
+
+Kalau perintah ini mencetak apa pun (bukan diam), berarti ada kesalahan tempel — ulangi langkah 7 dari awal.
+
+---
+
+## VPS2 — 8. Perbarui `run.sh`
 
 **Dimana:** VPS2, sebagai root, lewat web console.
 
@@ -155,11 +185,11 @@ chmod +x /srv/platform/run.sh
 bash -n /srv/platform/run.sh
 ```
 
-Kalau perintah ini mencetak apa pun (bukan diam), berarti ada kesalahan tempel — ulangi langkah 7 dari awal.
+Kalau perintah ini mencetak apa pun (bukan diam), berarti ada kesalahan tempel — ulangi langkah 8 dari awal.
 
 ---
 
-## VPS1 — 8. Pilih firewall, lalu aktifkan service
+## VPS1 — 9. Pilih firewall, lalu aktifkan service
 
 **Dimana:** VPS1, sebagai root. Pilih **salah satu** dari (a) atau (b) sebelum lanjut ke perintah aktivasi di bawah.
 
@@ -190,7 +220,7 @@ systemctl enable --now deploy-monitor
 
 ---
 
-## VPS1 — 9. Verifikasi
+## VPS1 — 10. Verifikasi
 
 **Dimana:** VPS1.
 
@@ -209,9 +239,15 @@ Baca pesan errornya, biasanya salah satu dari: `monitor.env` belum ada/salah pat
 Buka UI:
 
 - Pilihan (a): `http://<IP_VPS1>:3000`
-- Pilihan (b): jalankan SSH tunnel dulu (langkah 8), lalu buka `http://localhost:3000`
+- Pilihan (b): jalankan SSH tunnel dulu (langkah 9), lalu buka `http://localhost:3000`
 
 Login dengan token dari langkah 4.
+
+**Kalau login/dashboard-nya jalan tapi upload zip gagal** di fase "Cloning
+repository..."/"Updating existing repository..." dengan pesan
+`does not appear to be a git repository` — itu tandanya langkah 7
+(`deploy.sh` di VPS1) belum dijalankan atau isinya belum yang terbaru.
+Ulangi langkah 7.
 
 ---
 
@@ -255,3 +291,9 @@ npm install
 npm run build
 systemctl restart deploy-monitor
 ```
+
+`git pull` di atas cuma memperbarui kode aplikasi Deploy Monitor sendiri —
+**tidak** menyentuh `/srv/platform/deploy.sh` (VPS1) atau `/srv/platform/run.sh`
+(VPS2), karena keduanya file terpisah, bukan bagian dari repo ini yang
+ter-clone. Kalau update yang kamu tarik mengubah `deploy/deploy.sh` atau
+`deploy/run.sh` di repo, ulangi langkah 7 dan/atau 8 secara manual juga.
